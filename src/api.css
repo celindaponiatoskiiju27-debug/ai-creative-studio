@@ -1,0 +1,3 @@
+.api-error { margin: 10px 0 0; text-align: center; color: #d83d5d; font-size: 11px; }
+.result-card > img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.generate-btn:disabled { cursor: wait; opacity: .7; }
