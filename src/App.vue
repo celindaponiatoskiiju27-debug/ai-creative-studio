@@ -23,14 +23,14 @@
       </nav>
       <div class="sidebar-bottom">
         <div class="credit-card">
-          <div><span>本月算力</span><b>680</b></div>
-          <div class="progress"><i /></div>
-          <small>每日登录可领取免费算力</small>
+          <div><span>账户算力</span><b>{{ credits }}</b></div>
+          <div class="progress"><i :style="{ width: creditProgress }" /></div>
+          <small>每生成 1 张图片消耗 1 点</small>
         </div>
-        <button class="profile">
-          <span class="avatar">游</span
-          ><span><b>创作者</b><small>免费版</small></span
-          ><i>•••</i>
+        <button class="profile" :title="profileEmail">
+          <span class="avatar">{{ avatarText }}</span
+          ><span><b>{{ displayName }}</b><small>{{ accountLabel }} · {{ profileEmail }}</small></span
+          ><i @click.stop="logout">退出</i>
         </button>
       </div>
     </aside>
@@ -42,14 +42,26 @@
           <p>{{ pages[page][1] }}</p>
         </div>
         <div class="top-actions">
+          <button v-if="session" class="credit-pill"><span>✦</span> {{ credits }} 点</button>
+          <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
           <button class="ghost-btn">帮助中心</button
-          ><button class="credit-pill"><span>✦</span> 680</button
-          ><button class="primary-small">升级会员</button>
+          ><button class="primary-small">获取算力</button>
         </div>
       </header>
-      <section v-if="page === 'image'" class="creator-view">
+      <section v-if="page === 'image' || page === 'video'" class="creator-view">
         <div class="control-panel">
-          <div class="mode-tabs">
+          <div v-if="page === 'video'" class="mode-tabs video-mode-tabs">
+            <button
+              v-for="m in videoModes"
+              :key="m.id"
+              class="mode-tab"
+              :class="{ active: videoMode === m.id }"
+              @click="selectVideoMode(m.id)"
+            >
+              {{ m.name }}
+            </button>
+          </div>
+          <div v-if="false" class="mode-tabs">
             <button
               v-for="m in modes"
               :key="m.id"
@@ -79,16 +91,16 @@
               </div>
             </div>
           </div>
-          <div v-if="mode === 'image'" class="field upload-field">
-            <label>参考图片</label
+          <div v-if="page === 'video' && videoMode === 'image'" class="field upload-field">
+            <label>待生成动图的图片</label
             ><label class="upload-box"
               ><input type="file" accept="image/png,image/jpeg,image/webp" @change="upload" /><span
                 >＋</span
-              ><b>{{ uploadName || "上传参考图" }}</b
+              ><b>{{ uploadName || "上传一张静态图片" }}</b
               ><small>支持 JPG、PNG、WebP，最大 10MB</small></label
             >
           </div>
-          <div class="field">
+          <div v-if="page === 'image'" class="field">
             <label>选择模型</label
             ><button class="select-card" @click="modelOpen = !modelOpen">
               <span class="model-icon">✦</span
@@ -118,7 +130,7 @@
               </button>
             </div>
           </div>
-          <div class="settings-row">
+          <div v-if="page === 'image'" class="settings-row">
             <span>生成数量</span>
             <div class="stepper">
               <button @click="count = Math.max(1, count - 1)">−</button
@@ -127,8 +139,8 @@
             </div>
           </div>
           <button class="generate-btn" :disabled="loading" @click="generate">
-            <span>✦</span><b>{{ loading ? "正在生成" : "立即生成" }}</b
-            ><small>消耗 20 算力</small>
+            <span>✦</span><b>{{ loading ? "正在生成" : (page === 'video' ? (videoMode === 'image' ? "生成动图" : "生成视频") : "立即生成") }}</b
+            ><small>消耗 {{ page === 'video' ? videoCredits : count }} 算力</small>
           </button>
           <p v-if="errorMessage" class="api-error">{{ errorMessage }}</p>
           <p class="safe-note">
@@ -169,7 +181,8 @@
               class="result-card"
               :class="resultClass"
             >
-              <img :src="image" :alt="`AI 生成作品 ${i + 1}`" />
+              <video v-if="resultType === 'video'" :src="image" autoplay loop muted playsinline controls />
+              <img v-else :src="image" :alt="`AI 生成作品 ${i + 1}`" />
               <div class="result-actions">
                 <button @click="toggleFavorite(image)">{{ favorites.includes(image) ? "♥" : "♡" }}</button><button @click="download(image, i)">↓</button>
               </div>
@@ -184,6 +197,7 @@
         <button class="primary-small" @click="go('image')">返回创作</button>
       </section>
     </main>
+    <AuthModal v-if="authReady && !session" />
     <div
       class="overlay"
       :class="{ show: menuOpen }"
@@ -192,8 +206,12 @@
   </div>
 </template>
 <script>
+import AuthModal from './AuthModal.vue'
+import { supabase, supabaseConfigured } from './supabase'
+
 export default {
   name: "App",
+  components: { AuthModal },
   data() {
     const models = [{ name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型" }];
     return {
@@ -208,7 +226,7 @@ export default {
       ],
       pages: {
         image: ["图片生成", "把你的想象变成画面"],
-        video: ["视频生成", "让每一帧都充满想象"],
+        video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
         canvas: ["AI 画布", "无限空间，自由创作"],
         works: ["我的作品", "管理你的创作资产"],
         favorites: ["我的收藏", "灵感随时回看"],
@@ -217,6 +235,11 @@ export default {
         { id: "text", name: "文生图" },
         { id: "image", name: "图生图" },
       ],
+      videoModes: [
+        { id: "image", name: "图片生成 GIF" },
+        { id: "text", name: "文字生成视频" },
+      ],
+      videoMode: "image",
       models,
       model: models[0],
       ratios: [
@@ -244,8 +267,13 @@ export default {
       uploadName: "",
       uploadFile: null,
       results: [],
+      resultType: "image",
       favorites: JSON.parse(localStorage.getItem("ai-favorites") || "[]"),
       errorMessage: "",
+      authReady: false,
+      session: null,
+      profile: null,
+      authSubscription: null,
     };
   },
   computed: {
@@ -256,17 +284,73 @@ export default {
           ? "AI 正在生成"
           : `已生成 ${this.results.length} 张 · ${this.model.name}`;
     },
+    credits() {
+      return this.profile?.credits ?? 0;
+    },
+    profileEmail() {
+      return this.profile?.email || this.session?.user?.email || '未登录';
+    },
+    displayName() {
+      return this.profileEmail === '未登录' ? '访客' : this.profileEmail.split('@')[0];
+    },
+    avatarText() {
+      return this.displayName.slice(0, 1).toUpperCase();
+    },
+    accountLabel() {
+      return this.profile?.is_admin ? '管理员' : '注册用户';
+    },
+    creditProgress() {
+      return `${Math.min(100, Math.max(0, this.credits * 10))}%`;
+    },
     resultClass() {
       return {
         wide: ["16:9", "4:3"].includes(this.ratio),
         portrait: ["3:4", "9:16"].includes(this.ratio),
       };
     },
+    videoCredits() {
+      return this.videoMode === 'image' ? 5 : 8;
+    },
+  },
+  async mounted() {
+    if (!supabaseConfigured) { this.authReady = true; return }
+    const { data } = await supabase.auth.getSession()
+    this.session = data.session
+    if (this.session) await this.loadProfile()
+    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      this.session = session
+      this.profile = null
+      if (session) await this.loadProfile()
+    })
+    this.authSubscription = listener.subscription
+    this.authReady = true
+  },
+  beforeDestroy() {
+    this.authSubscription?.unsubscribe()
   },
   methods: {
+    async loadProfile() {
+      try {
+        const response = await fetch('/api/me', { headers: this.authHeaders() })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '无法读取用户信息')
+        this.profile = data.user
+      } catch (error) { this.errorMessage = error.message }
+    },
+    authHeaders(extra = {}) {
+      return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
+    },
+    async logout() { if (supabase) await supabase.auth.signOut() },
     go(p) {
       this.page = p;
+      this.mode = 'text';
       this.menuOpen = false;
+    },
+    selectVideoMode(mode) {
+      this.videoMode = mode;
+      this.errorMessage = '';
+      this.state = 'empty';
+      this.results = [];
     },
     randomize() {
       this.prompt = this.ideas[Math.floor(Math.random() * this.ideas.length)];
@@ -289,27 +373,41 @@ export default {
     download(image, index) {
       const link = document.createElement("a");
       link.href = image;
-      link.download = `lingjing-ai-${Date.now()}-${index + 1}.png`;
+      const extension = this.resultType === 'video' ? 'mp4' : (this.resultType === 'gif' ? 'gif' : 'png');
+      link.download = `lingjing-ai-${Date.now()}-${index + 1}.${extension}`;
       link.click();
     },
     async generate() {
+      if (!this.session) { this.errorMessage = "请先登录后再生成"; return; }
+      if (this.credits < this.count) { this.errorMessage = "算力不足，请减少生成数量或充值"; return; }
       if (!this.prompt.trim()) { this.errorMessage = "请输入画面描述"; return; }
-      if (this.mode === "image" && !this.uploadFile) { this.errorMessage = "图生图模式需要上传参考图片"; return; }
+      if (this.page === "video" && this.videoMode === 'image' && !this.uploadFile) { this.errorMessage = "请先上传一张静态图片"; return; }
+      const requiredCredits = this.page === 'video' ? this.videoCredits : this.count;
+      if (this.credits < requiredCredits) { this.errorMessage = "算力不足，请充值后再试"; return; }
       this.errorMessage = "";
       this.loading = true;
       this.state = "loading";
       try {
         let response;
-        if (this.mode === "image") {
+        if (this.page === "video") {
           const body = new FormData();
-          body.append("image", this.uploadFile); body.append("prompt", this.prompt); body.append("ratio", this.ratio); body.append("count", this.count);
-          response = await fetch("/api/images/edit", { method: "POST", body });
+          if (this.uploadFile) body.append("image", this.uploadFile);
+          body.append("mode", this.videoMode);
+          body.append("outputFormat", this.videoMode === 'image' ? 'gif' : 'mp4');
+          body.append("prompt", this.prompt); body.append("ratio", this.ratio);
+          response = await fetch("/api/videos/generate", { method: "POST", headers: this.authHeaders(), body });
         } else {
-          response = await fetch("/api/images/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: this.prompt, ratio: this.ratio, count: this.count }) });
+          response = await fetch("/api/images/generate", { method: "POST", headers: this.authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ prompt: this.prompt, ratio: this.ratio, count: this.count }) });
         }
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "生成失败");
-        this.results = data.images;
+        this.results = this.page === 'video'
+          ? (this.videoMode === 'image' ? (data.gifs || []) : (data.videos || []))
+          : data.images;
+        this.resultType = this.page === 'video'
+          ? (this.videoMode === 'image' ? 'gif' : 'video')
+          : 'image';
+        if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
         this.state = "done";
       } catch (error) {
         this.errorMessage = error.message;
