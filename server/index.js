@@ -106,6 +106,78 @@ function falTextModel(imageModel) {
   return imageModel.replace('/image-to-video', '/text-to-video')
 }
 
+function videoProvider() {
+  return (process.env.VIDEO_PROVIDER || 'fal').trim().toLowerCase()
+}
+
+function dashScopeBaseUrl() {
+  const baseUrl = process.env.DASHSCOPE_BASE_URL?.trim()
+  if (!process.env.DASHSCOPE_API_KEY || !baseUrl) {
+    const error = new Error('服务端尚未完整配置百炼 DASHSCOPE_API_KEY 和 DASHSCOPE_BASE_URL')
+    error.status = 503
+    throw error
+  }
+  return baseUrl.replace(/\/$/, '')
+}
+
+async function dashScopeRequest(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { Authorization: `Bearer ${process.env.DASHSCOPE_API_KEY}`, ...(options.headers || {}) },
+    signal: AbortSignal.timeout(120000)
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(payload.message || payload.code || `百炼接口请求失败（${response.status}）`)
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
+const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
+
+async function generateAliyunVideo({ file, mode, prompt }) {
+  const baseUrl = dashScopeBaseUrl()
+  const imageModel = process.env.VIDEO_MODEL || 'wan2.6-i2v-flash'
+  const textModel = process.env.VIDEO_TEXT_MODEL || 'wan2.6-t2v'
+  const model = mode === 'image'
+    ? (imageModel.startsWith('fal-ai/') ? 'wan2.6-i2v-flash' : imageModel)
+    : (textModel.startsWith('fal-ai/') ? 'wan2.6-t2v' : textModel)
+  const input = { prompt: prompt.trim() }
+  if (mode === 'image') input.img_url = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
+  const submitted = await dashScopeRequest(`${baseUrl}/services/aigc/video-generation/video-synthesis`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-DashScope-Async': 'enable' },
+    body: JSON.stringify({
+      model,
+      input,
+      parameters: {
+        resolution: '720P', duration: 5, prompt_extend: true, watermark: false,
+        ...(mode === 'image' && model === 'wan2.6-i2v-flash' ? { audio: false, shot_type: 'single' } : {})
+      }
+    })
+  })
+  const taskId = submitted.output?.task_id
+  if (!taskId) throw new Error('百炼未返回视频任务 ID')
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
+    await wait(5000)
+    const task = await dashScopeRequest(`${baseUrl}/tasks/${encodeURIComponent(taskId)}`)
+    const status = task.output?.task_status
+    if (status === 'SUCCEEDED') {
+      if (!task.output?.video_url) throw new Error('百炼任务成功但未返回视频文件')
+      return task.output.video_url
+    }
+    if (['FAILED', 'CANCELED', 'UNKNOWN'].includes(status)) {
+      throw new Error(task.output?.message || task.message || `百炼视频生成失败（${status}）`)
+    }
+  }
+  const error = new Error('百炼视频生成超时，请稍后重试')
+  error.status = 504
+  throw error
+}
+
 async function generateFalVideo({ file, mode, prompt, ratio }) {
   configureFal()
   const imageModel = process.env.VIDEO_MODEL || 'fal-ai/ltx-video/image-to-video'
@@ -117,6 +189,10 @@ async function generateFalVideo({ file, mode, prompt, ratio }) {
   const videoUrl = result.data?.video?.url
   if (!videoUrl) throw new Error('fal.ai 未返回视频文件')
   return videoUrl
+}
+
+async function generateVideo(options) {
+  return videoProvider() === 'aliyun' ? generateAliyunVideo(options) : generateFalVideo(options)
 }
 
 async function videoToGif(videoUrl) {
@@ -182,10 +258,13 @@ function mockImages(body) {
 app.get('/api/health', (_req, res) => res.json({
   ok: true,
   configured: Boolean(process.env.OPENAI_API_KEY),
-  videoConfigured: Boolean(process.env.FAL_KEY),
+  videoConfigured: videoProvider() === 'aliyun'
+    ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
+    : Boolean(process.env.FAL_KEY),
   mock: mockEnabled,
   model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
-  videoModel: process.env.VIDEO_MODEL || 'fal-ai/ltx-video/image-to-video',
+  videoModel: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'),
+  videoProvider: videoProvider(),
   provider: process.env.OPENAI_BASE_URL ? 'openai-compatible' : 'openai'
 }))
 
@@ -312,7 +391,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面运动描述' })
     const credits = mode === 'image' ? 5 : 8
     usageId = await reserveGeneration(req.user.id, req.body, credits, 1)
-    const videoUrl = await generateFalVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio })
+    const videoUrl = await generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio })
     const payload = mode === 'image' ? { gifs: [await videoToGif(videoUrl)] } : { videos: [videoUrl] }
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
