@@ -24,7 +24,11 @@ function client() {
     error.status = 503
     throw error
   }
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  const baseURL = process.env.OPENAI_BASE_URL?.trim()
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    ...(baseURL ? { baseURL: baseURL.replace(/\/$/, '') } : {})
+  })
 }
 
 const sizes = { '1:1': '1024x1024', '4:3': '1536x1024', '16:9': '1536x1024', '3:4': '1024x1536', '9:16': '1024x1536' }
@@ -49,7 +53,13 @@ function mockImages(body) {
   })
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, configured: Boolean(process.env.OPENAI_API_KEY), mock: mockEnabled, model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2' }))
+app.get('/api/health', (_req, res) => res.json({
+  ok: true,
+  configured: Boolean(process.env.OPENAI_API_KEY),
+  mock: mockEnabled,
+  model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
+  provider: process.env.OPENAI_BASE_URL ? 'openai-compatible' : 'openai'
+}))
 
 app.post('/api/images/generate', async (req, res, next) => {
   try {
