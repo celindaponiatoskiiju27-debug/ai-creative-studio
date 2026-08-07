@@ -362,16 +362,16 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
   }
 })
 
-app.post('/api/images/edit', requireUser, upload.single('image'), async (req, res, next) => {
+app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req, res, next) => {
   let usageId
   try {
-    if (!req.file) return res.status(400).json({ error: '请上传参考图片' })
+    if (!req.files?.length) return res.status(400).json({ error: '请上传至少一张参考图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     usageId = await reserveGeneration(req.user.id, req.body)
     let generated
     if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
     else {
-      const image = await toFile(req.file.buffer, req.file.originalname, { type: req.file.mimetype })
+      const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
       generated = images(await client().images.edit({ ...options(req.body), image }))
     }
     await finishGeneration(usageId, true)

@@ -116,6 +116,24 @@
               </button>
             </div>
           </div>
+          <div v-if="page === 'image'" class="field reference-field">
+            <div class="field-label">
+              <label>参考图片 <small>可选，最多4张，可修改或合成</small></label>
+              <button v-if="referenceImages.length" @click="clearReferenceImages">清空图片</button>
+            </div>
+            <label v-if="!referenceImages.length" class="reference-picker">
+              <input type="file" multiple accept="image/png,image/jpeg,image/webp" @change="selectReferenceImages" />
+              <span>＋</span><b>选择参考图片</b><small>可一次选择多张图片进行合成</small>
+            </label>
+            <div v-else class="reference-list">
+              <div v-for="(item, index) in referenceImages" :key="item.url" class="reference-thumb">
+                <img :src="item.url" :alt="`参考图片 ${index + 1}`" />
+                <button type="button" title="删除这张图片" @click="removeReferenceImage(index)">×</button>
+                <span>{{ index + 1 }}</span>
+              </div>
+              <label v-if="referenceImages.length < 4" class="reference-add">＋<small>继续添加</small><input type="file" multiple accept="image/png,image/jpeg,image/webp" @change="selectReferenceImages" /></label>
+            </div>
+          </div>
           <div class="field">
             <label>画面比例</label>
             <div class="ratio-grid">
@@ -266,6 +284,7 @@ export default {
       menuOpen: false,
       uploadName: "",
       uploadFile: null,
+      referenceImages: [],
       results: [],
       resultType: "image",
       favorites: JSON.parse(localStorage.getItem("ai-favorites") || "[]"),
@@ -327,6 +346,7 @@ export default {
   },
   beforeDestroy() {
     this.authSubscription?.unsubscribe()
+    this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
     async loadProfile() {
@@ -366,6 +386,24 @@ export default {
       this.uploadFile = e.target.files[0] || null;
       this.uploadName = this.uploadFile?.name || "";
     },
+    selectReferenceImages(e) {
+      const files = Array.from(e.target.files || []);
+      e.target.value = "";
+      if (!files.length) return;
+      if (files.some(file => file.size > 10 * 1024 * 1024)) { this.errorMessage = "每张参考图片不能超过 10MB"; return; }
+      const available = 4 - this.referenceImages.length;
+      this.referenceImages.push(...files.slice(0, available).map(file => ({ file, url: URL.createObjectURL(file) })));
+      this.errorMessage = files.length > available ? "最多只能选择4张参考图片" : "";
+    },
+    removeReferenceImage(index) {
+      const [removed] = this.referenceImages.splice(index, 1);
+      if (removed) URL.revokeObjectURL(removed.url);
+    },
+    clearReferenceImages() {
+      this.referenceImages.forEach(item => URL.revokeObjectURL(item.url));
+      this.referenceImages = [];
+      this.errorMessage = "";
+    },
     toggleFavorite(image) {
       this.favorites = this.favorites.includes(image) ? this.favorites.filter((item) => item !== image) : [image, ...this.favorites];
       localStorage.setItem("ai-favorites", JSON.stringify(this.favorites));
@@ -396,6 +434,13 @@ export default {
           body.append("outputFormat", this.videoMode === 'image' ? 'gif' : 'mp4');
           body.append("prompt", this.prompt); body.append("ratio", this.ratio);
           response = await fetch("/api/videos/generate", { method: "POST", headers: this.authHeaders(), body });
+        } else if (this.referenceImages.length) {
+          const body = new FormData();
+          this.referenceImages.forEach(item => body.append("images", item.file));
+          body.append("prompt", this.prompt);
+          body.append("ratio", this.ratio);
+          body.append("count", String(this.count));
+          response = await fetch("/api/images/edit", { method: "POST", headers: this.authHeaders(), body });
         } else {
           response = await fetch("/api/images/generate", { method: "POST", headers: this.authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ prompt: this.prompt, ratio: this.ratio, count: this.count }) });
         }
@@ -419,3 +464,20 @@ export default {
   },
 };
 </script>
+
+<style scoped>
+.reference-field small { margin-left: 5px; color: #a0a3ad; font-size: 10px; font-weight: 400; }
+.reference-picker { height: 82px !important; margin: 0 !important; padding: 0 14px; border: 1px dashed #d9d7e4; border-radius: 12px; display: flex !important; align-items: center; gap: 10px; cursor: pointer; }
+.reference-picker:hover { border-color: #8a70ff; background: #faf9ff; }
+.reference-picker input, .reference-add input { display: none; }
+.reference-picker span { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: #f0ecff; color: #7657ff; font-size: 20px; }
+.reference-picker b { font-size: 12px; }
+.reference-picker small { margin-left: auto; }
+.reference-list { min-height: 82px; padding: 8px; border: 1px solid #e9eaf0; border-radius: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fafaff; }
+.reference-thumb { position: relative; width: 64px; height: 64px; }
+.reference-thumb img { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; }
+.reference-thumb button { position: absolute; top: -5px; right: -5px; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: #25262c; color: #fff; line-height: 20px; cursor: pointer; }
+.reference-thumb span { position: absolute; left: 4px; bottom: 4px; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; background: #17181dcc; color: #fff; font-size: 9px; }
+.reference-add { width: 64px; height: 64px; margin: 0 !important; border: 1px dashed #cfcbe1; border-radius: 9px; display: flex !important; flex-direction: column; align-items: center; justify-content: center; color: #7657ff; font-size: 20px; cursor: pointer; }
+.reference-add small { margin: 3px 0 0; font-size: 9px; }
+</style>
