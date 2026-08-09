@@ -395,10 +395,11 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (!features) return res.status(400).json({ error: '请填写商品核心卖点' })
     const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1 }, 1, 1)
-    const completion = await textClient().responses.create({
+    const stream = await textClient().responses.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
       reasoning: { effort: 'low' },
       max_output_tokens: 2000,
+      stream: true,
       instructions: '你是一名资深中国电商文案策划。根据商品资料和平台特点，输出：1. 三个商品标题；2. 五条核心卖点；3. 一段可直接发布的营销正文；4. 三条短促销口号。语言自然、有转化力，不夸大功效，不虚构未提供的参数，不使用Markdown代码块。',
       input: [
         {
@@ -407,10 +408,17 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
         }
       ]
     })
-    const copy = responseText(completion)
+    let copy = ''
+    let completedResponse
+    for await (const event of stream) {
+      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') copy += event.delta
+      if (event.type === 'response.completed') completedResponse = event.response
+      if (event.type === 'error') throw new Error(event.message || event.error?.message || 'GPT-5.4 流式响应失败')
+    }
+    copy = copy.trim() || responseText(completedResponse)
     if (!copy) {
-      console.error('[copy-response]', JSON.stringify({ id: completion.id, status: completion.status, error: completion.error, output: completion.output }))
-      throw new Error(completion.error?.message || `GPT-5.4 未返回文案内容（状态：${completion.status || 'unknown'}）`)
+      console.error('[copy-response]', JSON.stringify({ id: completedResponse?.id, status: completedResponse?.status, error: completedResponse?.error, output: completedResponse?.output }))
+      throw new Error(completedResponse?.error?.message || `GPT-5.4 未返回文案内容（状态：${completedResponse?.status || 'unknown'}）`)
     }
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
