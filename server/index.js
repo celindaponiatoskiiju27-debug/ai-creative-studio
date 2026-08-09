@@ -373,7 +373,12 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     const completion = await textClient().responses.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
       instructions: '你是一名资深中国电商文案策划。根据商品资料和平台特点，输出：1. 三个商品标题；2. 五条核心卖点；3. 一段可直接发布的营销正文；4. 三条短促销口号。语言自然、有转化力，不夸大功效，不虚构未提供的参数，不使用Markdown代码块。',
-      input: prompt
+      input: [
+        {
+          role: 'user',
+          content: [{ type: 'input_text', text: prompt }]
+        }
+      ]
     })
     const copy = completion.output_text?.trim()
     if (!copy) throw new Error('GPT-5.4 未返回文案内容')
