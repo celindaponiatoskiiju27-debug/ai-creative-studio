@@ -436,6 +436,21 @@ app.get('/api/admin/credit-packages', requireUser, requireAdmin, async (_req, re
   try { res.json({ packages: (await loadCreditPackages(false)).map(publicPackage) }) } catch (error) { next(error) }
 })
 
+app.post('/api/admin/credit-packages', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const name = String(req.body.name || '新套餐').trim().slice(0, 30)
+    const priceFen = Math.round(Number(req.body.price || 9.9) * 100)
+    const credits = Number(req.body.credits || 50)
+    if (!name || !Number.isInteger(priceFen) || priceFen < 1 || !Number.isInteger(credits) || credits < 1) return res.status(400).json({ error: '请输入有效的套餐名称、价格和算力数量' })
+    const id = `package_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`
+    const existing = await loadCreditPackages(false)
+    const sortOrder = existing.length ? Math.max(...existing.map(item => Number(item.sort_order ?? item.sortOrder) || 0)) + 10 : 10
+    const { data, error } = await supabaseAdmin().from('credit_packages').insert({ id, name, price_fen: priceFen, credits, active: true, recommended: false, first_purchase_only: false, sort_order: sortOrder }).select('id,name,price_fen,credits,first_purchase_only,recommended,active,sort_order').single()
+    if (error) throw error
+    res.status(201).json({ package: publicPackage(data) })
+  } catch (error) { next(error) }
+})
+
 app.patch('/api/admin/credit-packages/:id', requireUser, requireAdmin, async (req, res, next) => {
   try {
     const name = String(req.body.name || '').trim().slice(0, 30)
@@ -457,6 +472,26 @@ app.patch('/api/admin/credit-packages/:id', requireUser, requireAdmin, async (re
     }).eq('id', req.params.id).select('id,name,price_fen,credits,first_purchase_only,recommended,active,sort_order').single()
     if (error) throw error
     res.json({ package: publicPackage(data) })
+  } catch (error) { next(error) }
+})
+
+app.delete('/api/admin/credit-packages/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const { count: activeCount, error: activeError } = await supabaseAdmin().from('credit_packages').select('id', { count: 'exact', head: true }).eq('active', true)
+    if (activeError) throw activeError
+    const { data: target, error: targetError } = await supabaseAdmin().from('credit_packages').select('id,active').eq('id', req.params.id).single()
+    if (targetError) throw targetError
+    if (target.active && activeCount <= 1) return res.status(409).json({ error: '至少需要保留一个启用中的充值套餐' })
+    const { count: orderCount, error: orderError } = await supabaseAdmin().from('recharge_orders').select('id', { count: 'exact', head: true }).eq('package_id', req.params.id)
+    if (orderError) throw orderError
+    if (orderCount > 0) {
+      const { error } = await supabaseAdmin().from('credit_packages').update({ active: false, recommended: false, updated_at: new Date().toISOString() }).eq('id', req.params.id)
+      if (error) throw error
+      return res.json({ deleted: false, archived: true })
+    }
+    const { error } = await supabaseAdmin().from('credit_packages').delete().eq('id', req.params.id)
+    if (error) throw error
+    res.json({ deleted: true, archived: false })
   } catch (error) { next(error) }
 })
 

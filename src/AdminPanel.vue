@@ -12,14 +12,14 @@
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
     <section class="package-settings-card">
-      <div class="admin-section-title"><div><h3>充值套餐设置</h3><p>修改后用户充值页面立即生效，无需重新部署</p></div><button @click="loadPackages">刷新套餐</button></div>
+      <div class="admin-section-title"><div><h3>充值套餐设置</h3><p>修改后用户充值页面立即生效，无需重新部署</p></div><div class="section-actions"><button @click="addPackage">＋ 新增套餐</button><button class="secondary" @click="loadPackages">刷新</button></div></div>
       <div class="package-editor-grid">
         <article v-for="item in packages" :key="item.id" :class="{ inactive: !item.active }">
           <label>套餐名称<input v-model.trim="item.name" maxlength="30" /></label>
           <div><label>售价（元）<input v-model.number="item.price" type="number" min="0.01" step="0.01" /></label><label>算力点数<input v-model.number="item.credits" type="number" min="1" step="1" /></label></div>
           <div class="package-options"><label><input v-model="item.active" type="checkbox" /> 启用</label><label><input v-model="item.recommended" type="checkbox" /> 推荐</label><label>排序<input v-model.number="item.sortOrder" type="number" step="1" /></label></div>
           <small v-if="item.firstPurchaseOnly">此套餐为每位用户限购一次的首充套餐</small>
-          <button :disabled="packageSavingId === item.id" @click="savePackage(item)">{{ packageSavingId === item.id ? '保存中…' : '保存套餐' }}</button>
+          <div class="package-card-actions"><button :disabled="packageSavingId === item.id" @click="savePackage(item)">{{ packageSavingId === item.id ? '保存中…' : '保存套餐' }}</button><button class="delete-package" :disabled="packageSavingId === item.id" @click="deletePackage(item)">删除</button></div>
         </article>
       </div>
     </section>
@@ -124,6 +124,28 @@ export default {
         if (!response.ok) throw new Error(data.error || '保存套餐失败')
         Object.assign(item, data.package)
         if (item.recommended) this.packages.forEach(other => { if (other.id !== item.id) other.recommended = false })
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.packageSavingId = '' }
+    },
+    async addPackage() {
+      this.packageSavingId = 'new'; this.errorMessage = ''
+      try {
+        const response = await fetch('/api/admin/credit-packages', { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ name: '新套餐', price: 9.9, credits: 50 }) })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '新增套餐失败')
+        this.packages.push(data.package)
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.packageSavingId = '' }
+    },
+    async deletePackage(item) {
+      if (!window.confirm(`确定删除套餐“${item.name}”吗？已有充值记录的套餐将改为下架并保留历史数据。`)) return
+      this.packageSavingId = item.id; this.errorMessage = ''
+      try {
+        const response = await fetch(`/api/admin/credit-packages/${item.id}`, { method: 'DELETE', headers: this.headers() })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '删除套餐失败')
+        if (data.archived) { item.active = false; item.recommended = false }
+        else this.packages = this.packages.filter(entry => entry.id !== item.id)
       } catch (error) { this.errorMessage = error.message }
       finally { this.packageSavingId = '' }
     },
