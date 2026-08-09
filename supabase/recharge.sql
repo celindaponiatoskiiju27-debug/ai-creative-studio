@@ -61,6 +61,11 @@ insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_type
 values ('payment-assets', 'payment-assets', true, 5242880, array['image/png','image/jpeg','image/webp'])
 on conflict (id) do update set public=true, file_size_limit=5242880, allowed_mime_types=array['image/png','image/jpeg','image/webp'];
 
+alter table public.usage_records add column if not exists output_urls jsonb not null default '[]'::jsonb;
+insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
+values ('generated-assets', 'generated-assets', true, 104857600, array['image/png','image/jpeg','image/webp','image/gif','video/mp4','video/webm'])
+on conflict (id) do update set public=true, file_size_limit=104857600, allowed_mime_types=array['image/png','image/jpeg','image/webp','image/gif','video/mp4','video/webm'];
+
 create index if not exists recharge_orders_user_created_idx on public.recharge_orders(user_id, created_at desc);
 create index if not exists recharge_orders_status_created_idx on public.recharge_orders(status, created_at desc);
 create unique index if not exists recharge_orders_one_paid_trial_idx on public.recharge_orders(user_id, package_id) where package_id = 'trial' and status = 'paid';
