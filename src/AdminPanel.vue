@@ -11,6 +11,18 @@
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
+    <section class="package-settings-card">
+      <div class="admin-section-title"><div><h3>充值套餐设置</h3><p>修改后用户充值页面立即生效，无需重新部署</p></div><button @click="loadPackages">刷新套餐</button></div>
+      <div class="package-editor-grid">
+        <article v-for="item in packages" :key="item.id" :class="{ inactive: !item.active }">
+          <label>套餐名称<input v-model.trim="item.name" maxlength="30" /></label>
+          <div><label>售价（元）<input v-model.number="item.price" type="number" min="0.01" step="0.01" /></label><label>算力点数<input v-model.number="item.credits" type="number" min="1" step="1" /></label></div>
+          <div class="package-options"><label><input v-model="item.active" type="checkbox" /> 启用</label><label><input v-model="item.recommended" type="checkbox" /> 推荐</label><label>排序<input v-model.number="item.sortOrder" type="number" step="1" /></label></div>
+          <small v-if="item.firstPurchaseOnly">此套餐为每位用户限购一次的首充套餐</small>
+          <button :disabled="packageSavingId === item.id" @click="savePackage(item)">{{ packageSavingId === item.id ? '保存中…' : '保存套餐' }}</button>
+        </article>
+      </div>
+    </section>
     <section class="payment-settings-card">
       <div class="admin-section-title"><div><h3>微信收款码设置</h3><p>图片保存在云端，可随时上传新收款码替换</p></div></div>
       <div class="payment-settings-body">
@@ -61,12 +73,12 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
+  data: () => ({ users: [], orders: [], packages: [], packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) }
   },
-  mounted() { this.loadUsers(); this.loadOrders(); this.loadPaymentSettings() },
+  mounted() { this.loadUsers(); this.loadOrders(); this.loadPackages(); this.loadPaymentSettings() },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
     async loadUsers() {
@@ -94,6 +106,26 @@ export default {
         if (!response.ok) throw new Error(data.error || '读取收款设置失败')
         this.paymentSettings = data.settings || {}; this.paymentInstructions = data.settings?.instructions || ''
       } catch (error) { this.errorMessage = error.message }
+    },
+    async loadPackages() {
+      try {
+        const response = await fetch('/api/admin/credit-packages', { headers: this.headers() })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '读取充值套餐失败')
+        this.packages = data.packages || []
+      } catch (error) { this.errorMessage = error.message }
+    },
+    async savePackage(item) {
+      if (!item.name.trim() || Number(item.price) <= 0 || !Number.isInteger(Number(item.credits)) || Number(item.credits) < 1) { this.errorMessage = '请填写有效的套餐名称、价格和算力点数'; return }
+      this.packageSavingId = item.id; this.errorMessage = ''
+      try {
+        const response = await fetch(`/api/admin/credit-packages/${item.id}`, { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(item) })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '保存套餐失败')
+        Object.assign(item, data.package)
+        if (item.recommended) this.packages.forEach(other => { if (other.id !== item.id) other.recommended = false })
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.packageSavingId = '' }
     },
     selectQr(event) {
       const file = event.target.files?.[0] || null

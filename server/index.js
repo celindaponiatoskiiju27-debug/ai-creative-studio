@@ -32,7 +32,23 @@ const CREDIT_PACKAGES = Object.freeze([
   { id: 'creator', name: '创作者套餐', priceFen: 5990, credits: 420 },
   { id: 'business', name: '商用套餐', priceFen: 9900, credits: 720 }
 ])
-const publicPackage = item => ({ id: item.id, name: item.name, price: item.priceFen / 100, credits: item.credits, firstPurchaseOnly: Boolean(item.firstPurchaseOnly), recommended: Boolean(item.recommended) })
+const publicPackage = item => ({
+  id: item.id, name: item.name, price: (item.price_fen ?? item.priceFen) / 100, credits: item.credits,
+  firstPurchaseOnly: Boolean(item.first_purchase_only ?? item.firstPurchaseOnly),
+  recommended: Boolean(item.recommended), active: item.active !== false, sortOrder: item.sort_order ?? 0
+})
+
+async function loadCreditPackages(activeOnly = true) {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return CREDIT_PACKAGES
+  let query = supabaseAdmin().from('credit_packages').select('id,name,price_fen,credits,first_purchase_only,recommended,active,sort_order,updated_at').order('sort_order')
+  if (activeOnly) query = query.eq('active', true)
+  const { data, error } = await query
+  if (error) {
+    if (error.code === '42P01') return CREDIT_PACKAGES
+    throw error
+  }
+  return data
+}
 
 function client() {
   if (!process.env.OPENAI_API_KEY) {
@@ -416,6 +432,34 @@ app.get('/api/admin/payment-settings', requireUser, requireAdmin, async (_req, r
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/credit-packages', requireUser, requireAdmin, async (_req, res, next) => {
+  try { res.json({ packages: (await loadCreditPackages(false)).map(publicPackage) }) } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/credit-packages/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const name = String(req.body.name || '').trim().slice(0, 30)
+    const priceFen = Math.round(Number(req.body.price) * 100)
+    const credits = Number(req.body.credits)
+    const sortOrder = Number(req.body.sortOrder)
+    if (!name) return res.status(400).json({ error: '请输入套餐名称' })
+    if (!Number.isInteger(priceFen) || priceFen < 1 || priceFen > 1000000) return res.status(400).json({ error: '请输入有效套餐价格' })
+    if (!Number.isInteger(credits) || credits < 1 || credits > 1000000) return res.status(400).json({ error: '请输入有效算力数量' })
+    if (!Number.isInteger(sortOrder)) return res.status(400).json({ error: '套餐排序必须是整数' })
+    const recommended = req.body.recommended === true
+    if (recommended) {
+      const { error: clearError } = await supabaseAdmin().from('credit_packages').update({ recommended: false }).neq('id', req.params.id)
+      if (clearError) throw clearError
+    }
+    const { data, error } = await supabaseAdmin().from('credit_packages').update({
+      name, price_fen: priceFen, credits, active: req.body.active === true,
+      recommended, sort_order: sortOrder, updated_at: new Date().toISOString()
+    }).eq('id', req.params.id).select('id,name,price_fen,credits,first_purchase_only,recommended,active,sort_order').single()
+    if (error) throw error
+    res.json({ package: publicPackage(data) })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/admin/payment-settings', requireUser, requireAdmin, upload.single('qr'), async (req, res, next) => {
   try {
     const instructions = String(req.body.instructions || '').trim().slice(0, 500)
@@ -457,6 +501,7 @@ app.post('/api/admin/recharge-orders/:id/review', requireUser, requireAdmin, asy
 
 app.get('/api/billing/config', async (_req, res, next) => {
   try {
+    const packages = await loadCreditPackages(true)
     let setting = null
     if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
       const { data, error } = await supabaseAdmin().from('payment_settings').select('qr_url,instructions,updated_at').eq('id', 'default').maybeSingle()
@@ -464,7 +509,7 @@ app.get('/api/billing/config', async (_req, res, next) => {
       setting = data
     }
     res.json({
-      packages: CREDIT_PACKAGES.map(publicPackage), prices: CREDIT_PRICES, paymentMode: 'manual',
+      packages: packages.map(publicPackage), prices: CREDIT_PRICES, paymentMode: 'manual',
       paymentQrUrl: setting?.qr_url || process.env.PAYMENT_QR_URL || '',
       instructions: setting?.instructions || process.env.MANUAL_PAYMENT_INSTRUCTIONS || '提交订单后，请联系管理员完成付款审核。'
     })
@@ -483,9 +528,12 @@ app.get('/api/billing/orders', requireUser, async (req, res, next) => {
 
 app.post('/api/billing/orders', requireUser, async (req, res, next) => {
   try {
-    const selected = CREDIT_PACKAGES.find(item => item.id === req.body.packageId)
+    const packages = await loadCreditPackages(true)
+    const selected = packages.find(item => item.id === req.body.packageId)
     if (!selected) return res.status(400).json({ error: '充值套餐不存在' })
-    if (selected.firstPurchaseOnly) {
+    const firstPurchaseOnly = selected.first_purchase_only ?? selected.firstPurchaseOnly
+    const priceFen = selected.price_fen ?? selected.priceFen
+    if (firstPurchaseOnly) {
       const { count, error: countError } = await supabaseAdmin().from('recharge_orders').select('id', { count: 'exact', head: true }).eq('user_id', req.user.id).eq('status', 'paid')
       if (countError) throw countError
       if (count > 0) return res.status(409).json({ error: '首充体验套餐每位用户仅限一次' })
@@ -493,7 +541,7 @@ app.post('/api/billing/orders', requireUser, async (req, res, next) => {
     const orderNo = `LJ${Date.now()}${Math.random().toString(36).slice(2, 8).toUpperCase()}`
     const reference = String(req.body.paymentReference || '').trim().slice(0, 200)
     const { data, error } = await supabaseAdmin().from('recharge_orders').insert({
-      order_no: orderNo, user_id: req.user.id, package_id: selected.id, amount_fen: selected.priceFen,
+      order_no: orderNo, user_id: req.user.id, package_id: selected.id, amount_fen: priceFen,
       credits: selected.credits, payment_provider: 'manual', payment_reference: reference || null
     }).select('id,order_no,package_id,amount_fen,credits,status,created_at').single()
     if (error) throw error

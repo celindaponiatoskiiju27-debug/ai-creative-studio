@@ -36,6 +36,26 @@ create table if not exists public.payment_settings (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.credit_packages (
+  id text primary key,
+  name text not null,
+  price_fen integer not null check (price_fen > 0),
+  credits integer not null check (credits > 0),
+  first_purchase_only boolean not null default false,
+  recommended boolean not null default false,
+  active boolean not null default true,
+  sort_order integer not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.credit_packages(id,name,price_fen,credits,first_purchase_only,recommended,active,sort_order) values
+('trial','首充体验',190,10,true,false,true,10),
+('starter','入门套餐',990,60,false,false,true,20),
+('popular','热销套餐',2990,200,false,true,true,30),
+('creator','创作者套餐',5990,420,false,false,true,40),
+('business','商用套餐',9900,720,false,false,true,50)
+on conflict (id) do nothing;
+
 insert into public.payment_settings(id) values ('default') on conflict (id) do nothing;
 insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
 values ('payment-assets', 'payment-assets', true, 5242880, array['image/png','image/jpeg','image/webp'])
@@ -48,12 +68,15 @@ create index if not exists credit_transactions_user_created_idx on public.credit
 alter table public.recharge_orders enable row level security;
 alter table public.credit_transactions enable row level security;
 alter table public.payment_settings enable row level security;
+alter table public.credit_packages enable row level security;
 drop policy if exists "users can read own recharge orders" on public.recharge_orders;
 create policy "users can read own recharge orders" on public.recharge_orders for select using (auth.uid() = user_id);
 drop policy if exists "users can read own credit transactions" on public.credit_transactions;
 create policy "users can read own credit transactions" on public.credit_transactions for select using (auth.uid() = user_id);
 drop policy if exists "anyone can read payment settings" on public.payment_settings;
 create policy "anyone can read payment settings" on public.payment_settings for select using (true);
+drop policy if exists "anyone can read active credit packages" on public.credit_packages;
+create policy "anyone can read active credit packages" on public.credit_packages for select using (active = true);
 
 create or replace function public.admin_review_recharge(p_admin_id uuid, p_order_id uuid, p_approve boolean)
 returns integer language plpgsql security definer set search_path = public as $$
