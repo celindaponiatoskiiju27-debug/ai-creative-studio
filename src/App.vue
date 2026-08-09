@@ -48,6 +48,28 @@
           ><button class="primary-small">获取算力</button>
         </div>
       </header>
+      <section v-if="page === 'copy'" class="copywriter-view">
+        <div class="copy-form-card">
+          <div class="copy-intro"><span>AI</span><div><b>电商文案生成器</b><small>填写商品信息，快速生成可直接使用的营销文案</small></div></div>
+          <div class="field"><label>商品名称</label><input v-model="copyProduct" class="copy-input" maxlength="100" placeholder="例如：夏季冰丝防晒衣" /></div>
+          <div class="field"><label>核心卖点</label><textarea v-model="copyFeatures" class="copy-textarea" maxlength="1000" placeholder="例如：UPF50+、冰凉透气、轻薄不闷汗、男女同款"></textarea></div>
+          <div class="copy-grid">
+            <div class="field"><label>投放平台</label><select v-model="copyPlatform" class="copy-input"><option>淘宝 / 天猫</option><option>拼多多</option><option>抖音 / 快手</option><option>小红书</option><option>微信公众号</option></select></div>
+            <div class="field"><label>文案风格</label><select v-model="copyStyle" class="copy-input"><option>突出卖点</option><option>种草分享</option><option>促销转化</option><option>专业可信</option><option>轻松幽默</option></select></div>
+          </div>
+          <button class="generate-btn" :class="{ loading: copyLoading }" :disabled="copyLoading" :aria-busy="copyLoading ? 'true' : 'false'" @click="generateCopy">
+            <span v-if="copyLoading" class="button-spinner" aria-hidden="true"></span><span v-else>✦</span>
+            <b>{{ copyLoading ? '文案生成中，请稍候…' : '生成电商文案' }}</b><small v-if="!copyLoading">消耗 1 算力</small>
+          </button>
+          <p v-if="copyError" class="api-error">{{ copyError }}</p>
+        </div>
+        <div class="copy-result-card">
+          <div class="copy-result-header"><div><h2>生成结果</h2><span>由 GPT-5.4 生成</span></div><button v-if="copyResult" class="history-btn" @click="copyCopyResult">{{ copyCopied ? '已复制' : '复制文案' }}</button></div>
+          <div v-if="copyLoading" class="loading-state"><div class="loader"><i /><i /><i /></div><h3>正在分析商品卖点</h3><p>AI 正在为目标平台组织高转化文案…</p></div>
+          <div v-else-if="!copyResult" class="copy-empty"><div class="placeholder-icon">文</div><h3>让好商品更会表达</h3><p>填写左侧商品资料，生成标题、卖点和营销正文</p></div>
+          <pre v-else class="copy-output">{{ copyResult }}</pre>
+        </div>
+      </section>
       <section v-if="page === 'image' || page === 'video'" class="creator-view">
         <div class="control-panel">
           <div v-if="page === 'video'" class="mode-tabs video-mode-tabs">
@@ -156,9 +178,11 @@
               ><button @click="count = Math.min(4, count + 1)">＋</button>
             </div>
           </div>
-          <button class="generate-btn" :disabled="loading" @click="generate">
-            <span>✦</span><b>{{ loading ? "正在生成" : (page === 'video' ? (videoMode === 'image' ? "生成动图" : "生成视频") : "立即生成") }}</b
-            ><small>消耗 {{ page === 'video' ? videoCredits : count }} 算力</small>
+          <button class="generate-btn" :class="{ loading }" :disabled="loading" :aria-busy="loading ? 'true' : 'false'" @click="generate">
+            <span v-if="loading" class="button-spinner" aria-hidden="true"></span>
+            <span v-else>✦</span>
+            <b>{{ loading ? "生成中，请稍候…" : (page === 'video' ? (videoMode === 'image' ? "生成动图" : "生成视频") : "立即生成") }}</b
+            ><small v-if="!loading">消耗 {{ page === 'video' ? videoCredits : count }} 算力</small>
           </button>
           <p v-if="errorMessage" class="api-error">{{ errorMessage }}</p>
           <p class="safe-note">
@@ -208,7 +232,7 @@
           </div>
         </div>
       </section>
-      <section v-else class="placeholder-view">
+      <section v-else-if="page !== 'copy'" class="placeholder-view">
         <div class="placeholder-icon">✦</div>
         <h2>{{ pages[page][0] }}</h2>
         <p>完整功能即将上线，敬请期待。</p>
@@ -235,6 +259,7 @@ export default {
     return {
       nav: [
         { label: "创作" },
+        { id: "copy", name: "电商文案", icon: "文", new: true },
         { id: "image", name: "图片生成", icon: "▧" },
         { id: "video", name: "视频生成", icon: "▷", new: true },
         { id: "canvas", name: "AI 画布", icon: "⌘" },
@@ -243,6 +268,7 @@ export default {
         { id: "favorites", name: "我的收藏", icon: "♡" },
       ],
       pages: {
+        copy: ["电商文案", "为电商商品生成高转化营销内容"],
         image: ["图片生成", "把你的想象变成画面"],
         video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
         canvas: ["AI 画布", "无限空间，自由创作"],
@@ -276,6 +302,14 @@ export default {
       page: "image",
       mode: "text",
       prompt: "",
+      copyProduct: "",
+      copyFeatures: "",
+      copyPlatform: "淘宝 / 天猫",
+      copyStyle: "突出卖点",
+      copyResult: "",
+      copyLoading: false,
+      copyError: "",
+      copyCopied: false,
       ratio: "1:1",
       count: 1,
       state: "empty",
@@ -360,6 +394,30 @@ export default {
     authHeaders(extra = {}) {
       return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
     },
+    async generateCopy() {
+      if (this.copyLoading) return;
+      if (!this.session) { this.copyError = "请先登录后再生成"; return; }
+      if (this.credits < 1) { this.copyError = "算力不足，请充值后再试"; return; }
+      if (!this.copyProduct.trim()) { this.copyError = "请填写商品名称"; return; }
+      if (!this.copyFeatures.trim()) { this.copyError = "请填写商品核心卖点"; return; }
+      this.copyLoading = true; this.copyError = ""; this.copyCopied = false;
+      try {
+        const response = await fetch('/api/copy/generate', {
+          method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ product: this.copyProduct, features: this.copyFeatures, platform: this.copyPlatform, style: this.copyStyle })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '文案生成失败');
+        this.copyResult = data.copy;
+        if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
+      } catch (error) { this.copyError = error.message; }
+      finally { this.copyLoading = false; }
+    },
+    async copyCopyResult() {
+      await navigator.clipboard.writeText(this.copyResult);
+      this.copyCopied = true;
+      setTimeout(() => { this.copyCopied = false; }, 1500);
+    },
     async logout() { if (supabase) await supabase.auth.signOut() },
     go(p) {
       this.page = p;
@@ -416,6 +474,7 @@ export default {
       link.click();
     },
     async generate() {
+      if (this.loading) return;
       if (!this.session) { this.errorMessage = "请先登录后再生成"; return; }
       if (this.credits < this.count) { this.errorMessage = "算力不足，请减少生成数量或充值"; return; }
       if (!this.prompt.trim()) { this.errorMessage = "请输入画面描述"; return; }
@@ -480,4 +539,19 @@ export default {
 .reference-thumb span { position: absolute; left: 4px; bottom: 4px; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; background: #17181dcc; color: #fff; font-size: 9px; }
 .reference-add { width: 64px; height: 64px; margin: 0 !important; border: 1px dashed #cfcbe1; border-radius: 9px; display: flex !important; flex-direction: column; align-items: center; justify-content: center; color: #7657ff; font-size: 20px; cursor: pointer; }
 .reference-add small { margin: 3px 0 0; font-size: 9px; }
+.generate-btn.loading { pointer-events: none; cursor: wait; opacity: .82; transform: none; }
+.button-spinner { width: 17px; height: 17px; border: 2px solid #ffffff66; border-top-color: #fff; border-radius: 50%; animation: button-spin .7s linear infinite; }
+@keyframes button-spin { to { transform: rotate(360deg); } }
+.copywriter-view { height: calc(100vh - 82px); min-height: 650px; padding: 22px; display: grid; grid-template-columns: minmax(360px, 440px) 1fr; gap: 18px; }
+.copy-form-card, .copy-result-card { padding: 22px; border: 1px solid #e9eaf0; border-radius: 18px; background: #fff; box-shadow: 0 4px 18px #24254108; overflow: auto; }
+.copy-intro { padding: 15px; border-radius: 13px; display: flex; align-items: center; gap: 12px; background: linear-gradient(120deg,#f1edff,#faf9ff); }
+.copy-intro > span { width: 42px; height: 42px; border-radius: 11px; display: grid; place-items: center; background: linear-gradient(145deg,#6748ff,#a57cff); color: #fff; font-weight: 800; }
+.copy-intro > div { display: flex; flex-direction: column; gap: 5px; }.copy-intro b { font-size: 14px; }.copy-intro small { color: #858993; font-size: 10px; }
+.copy-input, .copy-textarea { width: 100%; border: 1px solid #e9eaf0; border-radius: 11px; outline: 0; background: #fff; font: 12px/1.6 inherit; transition: .2s; }
+.copy-input { height: 43px; padding: 0 12px; }.copy-textarea { height: 125px; padding: 11px 12px; resize: vertical; }
+.copy-input:focus, .copy-textarea:focus { border-color: #9179ff; box-shadow: 0 0 0 3px #7657ff12; }.copy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.copy-result-card { display: flex; flex-direction: column; }.copy-result-header { height: 42px; display: flex; align-items: flex-start; justify-content: space-between; }.copy-result-header h2 { margin: 0 8px 0 0; display: inline; font-size: 15px; }.copy-result-header span { color: #858993; font-size: 10px; }
+.copy-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }.copy-empty h3 { margin: 20px 0 8px; }.copy-empty p { color: #989ba4; font-size: 12px; }
+.copy-output { flex: 1; margin: 15px 0 0; padding: 22px; border: 1px solid #eeebfa; border-radius: 14px; overflow: auto; background: #faf9ff; color: #292735; white-space: pre-wrap; word-break: break-word; font: 13px/1.9 "PingFang SC","Microsoft YaHei",sans-serif; }
+@media(max-width:900px){.copywriter-view{grid-template-columns:1fr;height:auto}.copy-result-card{min-height:520px}}@media(max-width:560px){.copywriter-view{padding:10px}.copy-form-card,.copy-result-card{padding:16px}.copy-grid{grid-template-columns:1fr}}
 </style>

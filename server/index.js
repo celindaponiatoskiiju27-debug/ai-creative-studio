@@ -106,6 +106,19 @@ function falTextModel(imageModel) {
   return imageModel.replace('/image-to-video', '/text-to-video')
 }
 
+function textClient() {
+  if (!process.env.OPENAI_TEXT_API_KEY) {
+    const error = new Error('服务端尚未配置 OPENAI_TEXT_API_KEY')
+    error.status = 503
+    throw error
+  }
+  const baseURL = (process.env.OPENAI_TEXT_BASE_URL || process.env.OPENAI_BASE_URL)?.trim()
+  return new OpenAI({
+    apiKey: process.env.OPENAI_TEXT_API_KEY,
+    ...(baseURL ? { baseURL: baseURL.replace(/\/$/, '') } : {})
+  })
+}
+
 function videoProvider() {
   return (process.env.VIDEO_PROVIDER || 'fal').trim().toLowerCase()
 }
@@ -258,6 +271,7 @@ function mockImages(body) {
 app.get('/api/health', (_req, res) => res.json({
   ok: true,
   configured: Boolean(process.env.OPENAI_API_KEY),
+  textConfigured: Boolean(process.env.OPENAI_TEXT_API_KEY),
   videoConfigured: videoProvider() === 'aliyun'
     ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
     : Boolean(process.env.FAL_KEY),
@@ -343,6 +357,33 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
     if (error) throw error
     res.json({ credits: data })
   } catch (error) { next(error) }
+})
+
+app.post('/api/copy/generate', requireUser, async (req, res, next) => {
+  let usageId
+  try {
+    const product = String(req.body.product || '').trim()
+    const features = String(req.body.features || '').trim()
+    const platform = String(req.body.platform || '淘宝 / 天猫').trim()
+    const style = String(req.body.style || '突出卖点').trim()
+    if (!product) return res.status(400).json({ error: '请填写商品名称' })
+    if (!features) return res.status(400).json({ error: '请填写商品核心卖点' })
+    const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
+    usageId = await reserveGeneration(req.user.id, { prompt, count: 1 }, 1, 1)
+    const completion = await textClient().responses.create({
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+      instructions: '你是一名资深中国电商文案策划。根据商品资料和平台特点，输出：1. 三个商品标题；2. 五条核心卖点；3. 一段可直接发布的营销正文；4. 三条短促销口号。语言自然、有转化力，不夸大功效，不虚构未提供的参数，不使用Markdown代码块。',
+      input: prompt
+    })
+    const copy = completion.output_text?.trim()
+    if (!copy) throw new Error('GPT-5.4 未返回文案内容')
+    await finishGeneration(usageId, true)
+    const profile = await profileFor(req.user.id)
+    res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits })
+  } catch (error) {
+    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    next(error)
+  }
 })
 
 app.post('/api/images/generate', requireUser, async (req, res, next) => {
