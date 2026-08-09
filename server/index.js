@@ -119,6 +119,20 @@ function textClient() {
   })
 }
 
+function responseText(response) {
+  if (typeof response?.output_text === 'string' && response.output_text.trim()) return response.output_text.trim()
+  const outputText = response?.output
+    ?.flatMap(item => Array.isArray(item.content) ? item.content : [])
+    .map(item => typeof item.text === 'string' ? item.text : (typeof item.output_text === 'string' ? item.output_text : ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+  if (outputText) return outputText
+  const choiceText = response?.choices?.[0]?.message?.content || response?.choices?.[0]?.text
+  if (typeof choiceText === 'string' && choiceText.trim()) return choiceText.trim()
+  return ''
+}
+
 function videoProvider() {
   return (process.env.VIDEO_PROVIDER || 'fal').trim().toLowerCase()
 }
@@ -380,8 +394,11 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
         }
       ]
     })
-    const copy = completion.output_text?.trim()
-    if (!copy) throw new Error('GPT-5.4 未返回文案内容')
+    const copy = responseText(completion)
+    if (!copy) {
+      console.error('[copy-response]', JSON.stringify({ id: completion.id, status: completion.status, error: completion.error, output: completion.output }))
+      throw new Error(completion.error?.message || `GPT-5.4 未返回文案内容（状态：${completion.status || 'unknown'}）`)
+    }
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
     res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits })
