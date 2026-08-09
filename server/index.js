@@ -393,7 +393,7 @@ app.get('/api/me', requireUser, async (req, res, next) => {
 
 app.get('/api/usage', requireUser, async (req, res, next) => {
   try {
-    const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,prompt,output_urls,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
+    const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,prompt,output_urls,output_text,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
     if (error) throw error
     res.json({ records: data })
   } catch (error) { next(error) }
@@ -658,6 +658,8 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
       console.error('[copy-response]', JSON.stringify({ id: completedResponse?.id, status: completedResponse?.status, error: completedResponse?.error, output: completedResponse?.output }))
       throw new Error(completedResponse?.error?.message || `GPT-5.4 未返回文案内容（状态：${completedResponse?.status || 'unknown'}）`)
     }
+    const { error: saveCopyError } = await supabaseAdmin().from('usage_records').update({ output_text: copy }).eq('id', usageId)
+    if (saveCopyError) console.error('[archive-copy]', usageId, saveCopyError.message)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
     res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits })

@@ -62,6 +62,7 @@ values ('payment-assets', 'payment-assets', true, 5242880, array['image/png','im
 on conflict (id) do update set public=true, file_size_limit=5242880, allowed_mime_types=array['image/png','image/jpeg','image/webp'];
 
 alter table public.usage_records add column if not exists output_urls jsonb not null default '[]'::jsonb;
+alter table public.usage_records add column if not exists output_text text;
 insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
 values ('generated-assets', 'generated-assets', true, 104857600, array['image/png','image/jpeg','image/webp','image/gif','video/mp4','video/webm'])
 on conflict (id) do update set public=true, file_size_limit=104857600, allowed_mime_types=array['image/png','image/jpeg','image/webp','image/gif','video/mp4','video/webm'];
