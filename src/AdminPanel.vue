@@ -11,6 +11,31 @@
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
+    <section class="payment-settings-card">
+      <div class="admin-section-title"><div><h3>微信收款码设置</h3><p>图片保存在云端，可随时上传新收款码替换</p></div></div>
+      <div class="payment-settings-body">
+        <div class="qr-preview"><img v-if="paymentSettings.qr_url" :src="paymentSettings.qr_url" alt="当前微信收款码" /><span v-else>暂未上传</span></div>
+        <div class="payment-settings-form">
+          <label>更换收款码<input ref="qrInput" type="file" accept="image/png,image/jpeg,image/webp" @change="selectQr" /></label>
+          <small>{{ qrFile ? qrFile.name : '支持 PNG、JPG、WebP，最大 5MB' }}</small>
+          <label>付款说明<textarea v-model="paymentInstructions" maxlength="500" placeholder="例如：付款时请备注注册邮箱"></textarea></label>
+          <button :disabled="paymentSaving" @click="savePaymentSettings">{{ paymentSaving ? '保存中…' : '保存收款设置' }}</button>
+        </div>
+      </div>
+    </section>
+    <div class="admin-table-wrap recharge-admin">
+      <div class="admin-section-title"><div><h3>充值订单</h3><p>确认收到款项后再批准，系统只会到账一次</p></div><button @click="loadOrders">刷新订单</button></div>
+      <table class="admin-table">
+        <thead><tr><th>订单号 / 用户</th><th>套餐</th><th>金额</th><th>付款备注</th><th>提交时间</th><th>状态 / 操作</th></tr></thead>
+        <tbody>
+          <tr v-for="order in orders" :key="order.id">
+            <td><b>{{ order.order_no }}</b><small>{{ order.email }}</small></td><td>{{ order.credits }} 点</td><td>¥{{ (order.amount_fen / 100).toFixed(2) }}</td><td>{{ order.payment_reference || '未填写' }}</td><td>{{ formatDate(order.created_at) }}</td>
+            <td><div v-if="order.status === 'pending'" class="order-actions"><button :disabled="busyId === order.id" @click="reviewOrder(order, true)">确认到账</button><button class="reject" :disabled="busyId === order.id" @click="reviewOrder(order, false)">拒绝</button></div><strong v-else>{{ orderStatus(order.status) }}</strong></td>
+          </tr>
+          <tr v-if="!orders.length"><td colspan="6" class="admin-empty">暂无充值订单</td></tr>
+        </tbody>
+      </table>
+    </div>
     <div class="admin-table-wrap">
       <table class="admin-table">
         <thead><tr><th>用户</th><th>剩余算力</th><th>累计消耗</th><th>图片数</th><th>最近使用</th><th>调整算力</th></tr></thead>
@@ -36,12 +61,12 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
+  data: () => ({ users: [], orders: [], paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) }
   },
-  mounted() { this.loadUsers() },
+  mounted() { this.loadUsers(); this.loadOrders(); this.loadPaymentSettings() },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
     async loadUsers() {
@@ -54,6 +79,53 @@ export default {
       } catch (error) { this.errorMessage = error.message }
       finally { this.loading = false }
     },
+    async loadOrders() {
+      try {
+        const response = await fetch('/api/admin/recharge-orders', { headers: this.headers() })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '读取充值订单失败')
+        this.orders = data.orders || []
+      } catch (error) { this.errorMessage = error.message }
+    },
+    async loadPaymentSettings() {
+      try {
+        const response = await fetch('/api/admin/payment-settings', { headers: this.headers() })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '读取收款设置失败')
+        this.paymentSettings = data.settings || {}; this.paymentInstructions = data.settings?.instructions || ''
+      } catch (error) { this.errorMessage = error.message }
+    },
+    selectQr(event) {
+      const file = event.target.files?.[0] || null
+      if (file && file.size > 5 * 1024 * 1024) { this.errorMessage = '收款码图片不能超过 5MB'; event.target.value = ''; this.qrFile = null; return }
+      this.qrFile = file; this.errorMessage = ''
+    },
+    async savePaymentSettings() {
+      if (!this.qrFile && !this.paymentInstructions.trim()) { this.errorMessage = '请选择收款码图片或填写付款说明'; return }
+      this.paymentSaving = true; this.errorMessage = ''
+      try {
+        const body = new FormData(); if (this.qrFile) body.append('qr', this.qrFile); body.append('instructions', this.paymentInstructions)
+        const response = await fetch('/api/admin/payment-settings', { method: 'POST', headers: this.headers(), body })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '保存收款设置失败')
+        this.paymentSettings = data.settings; this.paymentInstructions = data.settings.instructions || ''; this.qrFile = null
+        if (this.$refs.qrInput) this.$refs.qrInput.value = ''
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.paymentSaving = false }
+    },
+    async reviewOrder(order, approve) {
+      if (approve && !window.confirm(`确认已经收到 ¥${(order.amount_fen / 100).toFixed(2)}，并为 ${order.email} 增加 ${order.credits} 点算力吗？`)) return
+      this.busyId = order.id; this.errorMessage = ''
+      try {
+        const response = await fetch(`/api/admin/recharge-orders/${order.id}/review`, { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ approve }) })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '审核订单失败')
+        order.status = data.status
+        await this.loadUsers()
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.busyId = '' }
+    },
+    orderStatus(status) { return ({ paid: '已到账', rejected: '已拒绝', cancelled: '已取消' })[status] || status },
     async adjust(user) {
       const amount = Number(this.adjustments[user.id])
       if (!Number.isInteger(amount) || amount === 0) { this.errorMessage = '请输入非零整数，例如 10 或 -5'; return }
@@ -72,4 +144,3 @@ export default {
   }
 }
 </script>
-

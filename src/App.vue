@@ -25,7 +25,7 @@
         <div class="credit-card">
           <div><span>账户算力</span><b>{{ credits }}</b></div>
           <div class="progress"><i :style="{ width: creditProgress }" /></div>
-          <small>每生成 1 张图片消耗 1 点</small>
+          <small>图片低至 2 点，动图 6 点</small>
         </div>
         <button class="profile" :title="profileEmail">
           <span class="avatar">{{ avatarText }}</span
@@ -45,7 +45,7 @@
           <button v-if="session" class="credit-pill"><span>✦</span> {{ credits }} 点</button>
           <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
           <button class="ghost-btn">帮助中心</button
-          ><button class="primary-small">获取算力</button>
+          ><button class="primary-small" @click="openRecharge">获取算力</button>
         </div>
       </header>
       <section v-if="page === 'copy'" class="copywriter-view">
@@ -182,7 +182,7 @@
             <span v-if="loading" class="button-spinner" aria-hidden="true"></span>
             <span v-else>✦</span>
             <b>{{ loading ? "生成中，请稍候…" : (page === 'video' ? (videoMode === 'image' ? "生成动图" : "生成视频") : "立即生成") }}</b
-            ><small v-if="!loading">消耗 {{ page === 'video' ? videoCredits : count }} 算力</small>
+            ><small v-if="!loading">消耗 {{ requiredCredits }} 算力</small>
           </button>
           <p v-if="errorMessage" class="api-error">{{ errorMessage }}</p>
           <p class="safe-note">
@@ -239,6 +239,25 @@
         <button class="primary-small" @click="go('image')">返回创作</button>
       </section>
     </main>
+    <div v-if="rechargeOpen" class="recharge-overlay" @click.self="rechargeOpen = false">
+      <section class="recharge-modal">
+        <header><div><h2>充值算力</h2><p>选择适合你的套餐，充值算力长期有效</p></div><button @click="rechargeOpen = false">×</button></header>
+        <div class="package-grid">
+          <button v-for="item in packages" :key="item.id" :class="{ selected: selectedPackage === item.id }" @click="selectedPackage = item.id">
+            <em v-if="item.recommended">推荐</em><b>{{ item.name }}</b><strong>¥{{ item.price }}</strong><span>{{ item.credits }} 点算力</span><small>约 ¥{{ (item.price / item.credits).toFixed(3) }}/点</small>
+          </button>
+        </div>
+        <div class="payment-box">
+          <img v-if="billing.paymentQrUrl" :src="billing.paymentQrUrl" alt="付款二维码" />
+          <div><b>当前为人工审核充值</b><p>{{ billing.instructions || '提交订单后，请联系管理员完成付款审核。' }}</p><input v-model.trim="paymentReference" maxlength="200" placeholder="付款备注或转账单号（选填）" /></div>
+        </div>
+        <p v-if="rechargeMessage" :class="rechargeError ? 'api-error' : 'recharge-success'">{{ rechargeMessage }}</p>
+        <button class="generate-btn" :class="{ loading: rechargeLoading }" :disabled="rechargeLoading || !selectedPackage" @click="createRechargeOrder">
+          <span v-if="rechargeLoading" class="button-spinner"></span><span v-else>✦</span><b>{{ rechargeLoading ? '正在提交…' : '提交充值订单' }}</b>
+        </button>
+        <div v-if="rechargeOrders.length" class="order-list"><h3>最近订单</h3><div v-for="order in rechargeOrders" :key="order.id"><span>{{ order.order_no }}</span><b>¥{{ (order.amount_fen / 100).toFixed(2) }} / {{ order.credits }}点</b><em :class="order.status">{{ orderStatus(order.status) }}</em></div></div>
+      </section>
+    </div>
     <AuthModal v-if="authReady && !session" />
     <div
       class="overlay"
@@ -327,6 +346,15 @@ export default {
       session: null,
       profile: null,
       authSubscription: null,
+      rechargeOpen: false,
+      rechargeLoading: false,
+      rechargeMessage: "",
+      rechargeError: false,
+      selectedPackage: "popular",
+      paymentReference: "",
+      packages: [],
+      rechargeOrders: [],
+      billing: {},
     };
   },
   computed: {
@@ -362,7 +390,11 @@ export default {
       };
     },
     videoCredits() {
-      return this.videoMode === 'image' ? 5 : 8;
+      return this.videoMode === 'image' ? 6 : 25;
+    },
+    requiredCredits() {
+      if (this.page === 'video') return this.videoCredits;
+      return (this.referenceImages.length ? 3 : 2) * this.count;
     },
   },
   async mounted() {
@@ -394,6 +426,36 @@ export default {
     authHeaders(extra = {}) {
       return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
     },
+    async openRecharge() {
+      if (!this.session) { this.errorMessage = '请先登录后再充值'; return; }
+      this.rechargeOpen = true; this.rechargeMessage = ''; this.rechargeError = false;
+      try {
+        const [configResponse, ordersResponse] = await Promise.all([
+          fetch('/api/billing/config'), fetch('/api/billing/orders', { headers: this.authHeaders() })
+        ]);
+        const config = await configResponse.json(); const orders = await ordersResponse.json();
+        if (!configResponse.ok) throw new Error(config.error || '无法读取充值套餐');
+        if (!ordersResponse.ok) throw new Error(orders.error || '无法读取充值订单');
+        this.billing = config; this.packages = config.packages || []; this.rechargeOrders = orders.orders || [];
+        if (!this.packages.some(item => item.id === this.selectedPackage)) this.selectedPackage = this.packages[0]?.id || '';
+      } catch (error) { this.rechargeMessage = error.message; this.rechargeError = true; }
+    },
+    async createRechargeOrder() {
+      if (this.rechargeLoading || !this.selectedPackage) return;
+      this.rechargeLoading = true; this.rechargeMessage = ''; this.rechargeError = false;
+      try {
+        const response = await fetch('/api/billing/orders', {
+          method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ packageId: this.selectedPackage, paymentReference: this.paymentReference })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '充值订单提交失败');
+        this.rechargeOrders.unshift(data.order); this.paymentReference = '';
+        this.rechargeMessage = `订单 ${data.order.order_no} 已提交，请完成付款并等待管理员审核。`;
+      } catch (error) { this.rechargeMessage = error.message; this.rechargeError = true; }
+      finally { this.rechargeLoading = false; }
+    },
+    orderStatus(status) { return ({ pending: '待审核', paid: '已到账', rejected: '未通过', cancelled: '已取消' })[status] || status; },
     async generateCopy() {
       if (this.copyLoading) return;
       if (!this.session) { this.copyError = "请先登录后再生成"; return; }
@@ -476,11 +538,9 @@ export default {
     async generate() {
       if (this.loading) return;
       if (!this.session) { this.errorMessage = "请先登录后再生成"; return; }
-      if (this.credits < this.count) { this.errorMessage = "算力不足，请减少生成数量或充值"; return; }
       if (!this.prompt.trim()) { this.errorMessage = "请输入画面描述"; return; }
       if (this.page === "video" && this.videoMode === 'image' && !this.uploadFile) { this.errorMessage = "请先上传一张静态图片"; return; }
-      const requiredCredits = this.page === 'video' ? this.videoCredits : this.count;
-      if (this.credits < requiredCredits) { this.errorMessage = "算力不足，请充值后再试"; return; }
+      if (this.credits < this.requiredCredits) { this.errorMessage = "算力不足，请充值后再试"; return; }
       this.errorMessage = "";
       this.loading = true;
       this.state = "loading";
@@ -553,5 +613,6 @@ export default {
 .copy-result-card { display: flex; flex-direction: column; }.copy-result-header { height: 42px; display: flex; align-items: flex-start; justify-content: space-between; }.copy-result-header h2 { margin: 0 8px 0 0; display: inline; font-size: 15px; }.copy-result-header span { color: #858993; font-size: 10px; }
 .copy-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }.copy-empty h3 { margin: 20px 0 8px; }.copy-empty p { color: #989ba4; font-size: 12px; }
 .copy-output { flex: 1; margin: 15px 0 0; padding: 22px; border: 1px solid #eeebfa; border-radius: 14px; overflow: auto; background: #faf9ff; color: #292735; white-space: pre-wrap; word-break: break-word; font: 13px/1.9 "PingFang SC","Microsoft YaHei",sans-serif; }
+.recharge-overlay{position:fixed;inset:0;z-index:100;background:#11131a99;display:grid;place-items:center;padding:20px}.recharge-modal{width:min(760px,100%);max-height:92vh;overflow:auto;padding:25px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.recharge-modal>header{display:flex;justify-content:space-between;align-items:flex-start}.recharge-modal h2{margin:0 0 6px}.recharge-modal header p{margin:0;color:#858993;font-size:12px}.recharge-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.package-grid{margin:22px 0;display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.package-grid button{position:relative;min-height:142px;padding:17px 8px 12px;border:1px solid #e9eaf0;border-radius:13px;background:#fff;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer}.package-grid button.selected{border:2px solid #7657ff;background:#f8f6ff}.package-grid button>em{position:absolute;top:-9px;padding:3px 9px;border-radius:10px;background:#7657ff;color:#fff;font-size:9px;font-style:normal}.package-grid strong{font-size:22px}.package-grid span{color:#7657ff;font-size:12px}.package-grid small{color:#999;font-size:9px}.payment-box{padding:16px;border-radius:13px;background:#f7f7fa;display:flex;gap:15px;align-items:center}.payment-box img{width:110px;height:110px;object-fit:contain;background:#fff}.payment-box>div{flex:1}.payment-box p{margin:7px 0;color:#777b85;font-size:11px}.payment-box input{width:100%;height:38px;padding:0 11px;border:1px solid #dddfe6;border-radius:9px;background:#fff}.recharge-success{color:#17894c;font-size:12px}.order-list{margin-top:20px}.order-list h3{font-size:13px}.order-list>div{padding:9px 0;border-top:1px solid #eee;display:grid;grid-template-columns:1fr auto 60px;gap:10px;font-size:10px}.order-list em{text-align:right;font-style:normal}.order-list em.paid{color:#17894c}.order-list em.pending{color:#d38316}.order-list em.rejected{color:#d33}@media(max-width:700px){.package-grid{grid-template-columns:repeat(2,1fr)}.payment-box{align-items:flex-start}.order-list>div{grid-template-columns:1fr}.order-list em{text-align:left}}
 @media(max-width:900px){.copywriter-view{grid-template-columns:1fr;height:auto}.copy-result-card{min-height:520px}}@media(max-width:560px){.copywriter-view{padding:10px}.copy-form-card,.copy-result-card{padding:16px}.copy-grid{grid-template-columns:1fr}}
 </style>

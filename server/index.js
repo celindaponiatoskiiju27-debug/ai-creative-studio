@@ -24,6 +24,16 @@ const upload = multer({
 app.use(cors({ origin: ['http://localhost:5174', 'http://127.0.0.1:5174'] }))
 app.use(express.json({ limit: '1mb' }))
 
+const CREDIT_PRICES = Object.freeze({ copy: 1, image: 2, imageEdit: 3, gif: 6, video: 25 })
+const CREDIT_PACKAGES = Object.freeze([
+  { id: 'trial', name: '首充体验', priceFen: 190, credits: 10, firstPurchaseOnly: true },
+  { id: 'starter', name: '入门套餐', priceFen: 990, credits: 60 },
+  { id: 'popular', name: '热销套餐', priceFen: 2990, credits: 200, recommended: true },
+  { id: 'creator', name: '创作者套餐', priceFen: 5990, credits: 420 },
+  { id: 'business', name: '商用套餐', priceFen: 9900, credits: 720 }
+])
+const publicPackage = item => ({ id: item.id, name: item.name, price: item.priceFen / 100, credits: item.credits, firstPurchaseOnly: Boolean(item.firstPurchaseOnly), recommended: Boolean(item.recommended) })
+
 function client() {
   if (!process.env.OPENAI_API_KEY) {
     const error = new Error('服务端尚未配置 OPENAI_API_KEY')
@@ -384,6 +394,113 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/recharge-orders', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    let query = supabaseAdmin().from('recharge_orders').select('id,order_no,user_id,package_id,amount_fen,credits,payment_reference,status,created_at,paid_at').order('created_at', { ascending: false }).limit(200)
+    if (req.query.status) query = query.eq('status', req.query.status)
+    const { data: orders, error } = await query
+    if (error) throw error
+    const userIds = [...new Set(orders.map(item => item.user_id))]
+    const { data: profiles, error: profileError } = userIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', userIds) : { data: [], error: null }
+    if (profileError) throw profileError
+    const emails = new Map(profiles.map(item => [item.id, item.email]))
+    res.json({ orders: orders.map(item => ({ ...item, email: emails.get(item.user_id) || '' })) })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/payment-settings', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('payment_settings').select('qr_url,instructions,updated_at').eq('id', 'default').single()
+    if (error) throw error
+    res.json({ settings: data })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/payment-settings', requireUser, requireAdmin, upload.single('qr'), async (req, res, next) => {
+  try {
+    const instructions = String(req.body.instructions || '').trim().slice(0, 500)
+    if (!req.file && !instructions) return res.status(400).json({ error: '请选择收款码图片或填写付款说明' })
+    const { data: current, error: currentError } = await supabaseAdmin().from('payment_settings').select('qr_url,qr_path,instructions').eq('id', 'default').single()
+    if (currentError) throw currentError
+    let qrUrl = current.qr_url || null
+    let qrPath = current.qr_path || null
+    if (req.file) {
+      if (req.file.size > 5 * 1024 * 1024) return res.status(413).json({ error: '收款码图片不能超过 5MB' })
+      const extension = ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' })[req.file.mimetype]
+      if (!extension) return res.status(400).json({ error: '收款码仅支持 PNG、JPG 或 WebP' })
+      const newPath = `wechat-qr-${Date.now()}.${extension}`
+      const { error: uploadError } = await supabaseAdmin().storage.from('payment-assets').upload(newPath, req.file.buffer, { contentType: req.file.mimetype, upsert: false })
+      if (uploadError) throw uploadError
+      const { data: publicData } = supabaseAdmin().storage.from('payment-assets').getPublicUrl(newPath)
+      qrUrl = publicData.publicUrl
+      const oldPath = qrPath
+      qrPath = newPath
+      if (oldPath) await supabaseAdmin().storage.from('payment-assets').remove([oldPath]).catch(() => {})
+    }
+    const { data, error } = await supabaseAdmin().from('payment_settings').update({
+      qr_url: qrUrl, qr_path: qrPath, instructions: instructions || current.instructions,
+      updated_by: req.user.id, updated_at: new Date().toISOString()
+    }).eq('id', 'default').select('qr_url,instructions,updated_at').single()
+    if (error) throw error
+    res.json({ settings: data })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/recharge-orders/:id/review', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const approve = req.body.approve === true
+    const { data, error } = await supabaseAdmin().rpc('admin_review_recharge', { p_admin_id: req.user.id, p_order_id: req.params.id, p_approve: approve })
+    if (error) throw error
+    res.json({ credits: data, status: approve ? 'paid' : 'rejected' })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/billing/config', async (_req, res, next) => {
+  try {
+    let setting = null
+    if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const { data, error } = await supabaseAdmin().from('payment_settings').select('qr_url,instructions,updated_at').eq('id', 'default').maybeSingle()
+      if (error && error.code !== '42P01') throw error
+      setting = data
+    }
+    res.json({
+      packages: CREDIT_PACKAGES.map(publicPackage), prices: CREDIT_PRICES, paymentMode: 'manual',
+      paymentQrUrl: setting?.qr_url || process.env.PAYMENT_QR_URL || '',
+      instructions: setting?.instructions || process.env.MANUAL_PAYMENT_INSTRUCTIONS || '提交订单后，请联系管理员完成付款审核。'
+    })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/billing/orders', requireUser, async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('recharge_orders')
+      .select('id,order_no,package_id,amount_fen,credits,payment_provider,payment_reference,status,created_at,paid_at')
+      .eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30)
+    if (error) throw error
+    res.json({ orders: data })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/billing/orders', requireUser, async (req, res, next) => {
+  try {
+    const selected = CREDIT_PACKAGES.find(item => item.id === req.body.packageId)
+    if (!selected) return res.status(400).json({ error: '充值套餐不存在' })
+    if (selected.firstPurchaseOnly) {
+      const { count, error: countError } = await supabaseAdmin().from('recharge_orders').select('id', { count: 'exact', head: true }).eq('user_id', req.user.id).eq('status', 'paid')
+      if (countError) throw countError
+      if (count > 0) return res.status(409).json({ error: '首充体验套餐每位用户仅限一次' })
+    }
+    const orderNo = `LJ${Date.now()}${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+    const reference = String(req.body.paymentReference || '').trim().slice(0, 200)
+    const { data, error } = await supabaseAdmin().from('recharge_orders').insert({
+      order_no: orderNo, user_id: req.user.id, package_id: selected.id, amount_fen: selected.priceFen,
+      credits: selected.credits, payment_provider: 'manual', payment_reference: reference || null
+    }).select('id,order_no,package_id,amount_fen,credits,status,created_at').single()
+    if (error) throw error
+    res.status(201).json({ order: data })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/copy/generate', requireUser, async (req, res, next) => {
   let usageId
   try {
@@ -433,7 +550,8 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
   let usageId
   try {
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
-    usageId = await reserveGeneration(req.user.id, req.body)
+    const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
+    usageId = await reserveGeneration(req.user.id, req.body, CREDIT_PRICES.image * count, count)
     const generated = mockEnabled
       ? await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
       : images(await client().images.generate(options(req.body)))
@@ -451,7 +569,8 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
   try {
     if (!req.files?.length) return res.status(400).json({ error: '请上传至少一张参考图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
-    usageId = await reserveGeneration(req.user.id, req.body)
+    const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
+    usageId = await reserveGeneration(req.user.id, req.body, CREDIT_PRICES.imageEdit * count, count)
     let generated
     if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
     else {
@@ -473,7 +592,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     const mode = req.body.mode === 'text' ? 'text' : 'image'
     if (mode === 'image' && !req.file) return res.status(400).json({ error: '请上传一张静态图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面运动描述' })
-    const credits = mode === 'image' ? 5 : 8
+    const credits = mode === 'image' ? CREDIT_PRICES.gif : CREDIT_PRICES.video
     usageId = await reserveGeneration(req.user.id, req.body, credits, 1)
     const videoUrl = await generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio })
     const payload = mode === 'image' ? { gifs: [await videoToGif(videoUrl)] } : { videos: [videoUrl] }
