@@ -130,6 +130,17 @@ function responseText(response) {
   if (outputText) return outputText
   const choiceText = response?.choices?.[0]?.message?.content || response?.choices?.[0]?.text
   if (typeof choiceText === 'string' && choiceText.trim()) return choiceText.trim()
+  const collected = []
+  const visit = (value, key = '') => {
+    if (typeof value === 'string') {
+      if (['text', 'output_text', 'content', 'message', 'response', 'answer'].includes(key) && value.trim()) collected.push(value.trim())
+      return
+    }
+    if (Array.isArray(value)) { value.forEach(item => visit(item, key)); return }
+    if (value && typeof value === 'object') Object.entries(value).forEach(([childKey, childValue]) => visit(childValue, childKey))
+  }
+  visit(response)
+  if (collected.length) return [...new Set(collected)].join('\n')
   return ''
 }
 
@@ -386,6 +397,8 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1 }, 1, 1)
     const completion = await textClient().responses.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+      reasoning: { effort: 'low' },
+      max_output_tokens: 2000,
       instructions: '你是一名资深中国电商文案策划。根据商品资料和平台特点，输出：1. 三个商品标题；2. 五条核心卖点；3. 一段可直接发布的营销正文；4. 三条短促销口号。语言自然、有转化力，不夸大功效，不虚构未提供的参数，不使用Markdown代码块。',
       input: [
         {
