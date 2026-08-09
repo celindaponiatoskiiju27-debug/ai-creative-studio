@@ -114,6 +114,10 @@ async function reserveGeneration(userId, body, requestedCredits, outputCount) {
     if (error.message?.includes('INSUFFICIENT_CREDITS')) { error.status = 402; error.message = '算力不足' }
     throw error
   }
+  if (body.action && data) {
+    const { error: actionError } = await supabaseAdmin().from('usage_records').update({ action: String(body.action).slice(0, 50) }).eq('id', data)
+    if (actionError) throw actionError
+  }
   return data
 }
 
@@ -355,7 +359,7 @@ app.get('/api/me', requireUser, async (req, res, next) => {
 
 app.get('/api/usage', requireUser, async (req, res, next) => {
   try {
-    const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
+    const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,prompt,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
     if (error) throw error
     res.json({ records: data })
   } catch (error) { next(error) }
@@ -594,7 +598,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (!product) return res.status(400).json({ error: '请填写商品名称' })
     if (!features) return res.status(400).json({ error: '请填写商品核心卖点' })
     const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
-    usageId = await reserveGeneration(req.user.id, { prompt, count: 1 }, 1, 1)
+    usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'copy_generation' }, CREDIT_PRICES.copy, 1)
     const stream = await textClient().responses.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
       reasoning: { effort: 'low' },
@@ -634,7 +638,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
   try {
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
-    usageId = await reserveGeneration(req.user.id, req.body, CREDIT_PRICES.image * count, count)
+    usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_generation' }, CREDIT_PRICES.image * count, count)
     const generated = mockEnabled
       ? await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
       : images(await client().images.generate(options(req.body)))
@@ -653,7 +657,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     if (!req.files?.length) return res.status(400).json({ error: '请上传至少一张参考图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
-    usageId = await reserveGeneration(req.user.id, req.body, CREDIT_PRICES.imageEdit * count, count)
+    usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_edit' }, CREDIT_PRICES.imageEdit * count, count)
     let generated
     if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
     else {
@@ -676,7 +680,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     if (mode === 'image' && !req.file) return res.status(400).json({ error: '请上传一张静态图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面运动描述' })
     const credits = mode === 'image' ? CREDIT_PRICES.gif : CREDIT_PRICES.video
-    usageId = await reserveGeneration(req.user.id, req.body, credits, 1)
+    usageId = await reserveGeneration(req.user.id, { ...req.body, action: mode === 'image' ? 'gif_generation' : 'video_generation' }, credits, 1)
     const videoUrl = await generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio })
     const payload = mode === 'image' ? { gifs: [await videoToGif(videoUrl)] } : { videos: [videoUrl] }
     await finishGeneration(usageId, true)

@@ -195,7 +195,7 @@
               <h2>创作结果</h2>
               <span>{{ meta }}</span>
             </div>
-            <button class="history-btn">◷ 生成记录</button>
+            <button class="history-btn" @click="openHistory">◷ 生成记录</button>
           </div>
           <div v-if="state === 'empty'" class="empty-state">
             <div class="magic-orb"><i /><span>✦</span></div>
@@ -256,6 +256,21 @@
           <span v-if="rechargeLoading" class="button-spinner"></span><span v-else>✦</span><b>{{ rechargeLoading ? '正在提交…' : '提交充值订单' }}</b>
         </button>
         <div v-if="rechargeOrders.length" class="order-list"><h3>最近订单</h3><div v-for="order in rechargeOrders" :key="order.id"><span>{{ order.order_no }}</span><b>¥{{ (order.amount_fen / 100).toFixed(2) }} / {{ order.credits }}点</b><em :class="order.status">{{ orderStatus(order.status) }}</em></div></div>
+      </section>
+    </div>
+    <div v-if="historyOpen" class="recharge-overlay" @click.self="historyOpen = false">
+      <section class="history-modal">
+        <header><div><h2>生成记录</h2><p>最近 50 条创作与算力消耗记录</p></div><button @click="historyOpen = false">×</button></header>
+        <div v-if="historyLoading" class="history-loading">正在读取记录…</div>
+        <p v-else-if="historyError" class="api-error">{{ historyError }}</p>
+        <div v-else-if="historyRecords.length" class="history-list">
+          <article v-for="record in historyRecords" :key="record.id">
+            <div class="history-icon">{{ historyIcon(record.action) }}</div>
+            <div class="history-info"><div><b>{{ historyName(record.action) }}</b><em :class="record.status">{{ historyStatus(record.status) }}</em></div><p>{{ record.prompt || '未记录描述' }}</p><small>{{ formatHistoryDate(record.created_at) }} · {{ record.image_count }} 个结果</small></div>
+            <strong>-{{ record.credits }} 点</strong>
+          </article>
+        </div>
+        <div v-else class="history-empty">暂时没有生成记录，完成第一次创作后会显示在这里。</div>
       </section>
     </div>
     <AuthModal v-if="authReady && !session" />
@@ -355,6 +370,10 @@ export default {
       packages: [],
       rechargeOrders: [],
       billing: {},
+      historyOpen: false,
+      historyLoading: false,
+      historyRecords: [],
+      historyError: "",
     };
   },
   computed: {
@@ -456,6 +475,20 @@ export default {
       finally { this.rechargeLoading = false; }
     },
     orderStatus(status) { return ({ pending: '待审核', paid: '已到账', rejected: '未通过', cancelled: '已取消' })[status] || status; },
+    async openHistory() {
+      if (!this.session) { this.errorMessage = '请先登录后查看生成记录'; return; }
+      this.historyOpen = true; this.historyLoading = true; this.historyError = '';
+      try {
+        const response = await fetch('/api/usage', { headers: this.authHeaders() }); const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取生成记录失败');
+        this.historyRecords = data.records || [];
+      } catch (error) { this.historyError = error.message; }
+      finally { this.historyLoading = false; }
+    },
+    historyName(action) { return ({ copy_generation: '电商文案', image_generation: '图片生成', image_edit: '图生图 / 多图合成', gif_generation: 'GIF 动图', video_generation: '视频生成' })[action] || '图片生成'; },
+    historyIcon(action) { return ({ copy_generation: '文', image_generation: '图', image_edit: '改', gif_generation: '动', video_generation: '视' })[action] || '图'; },
+    historyStatus(status) { return ({ pending: '生成中', completed: '成功', failed: '失败已退款' })[status] || status; },
+    formatHistoryDate(value) { return value ? new Date(value).toLocaleString('zh-CN') : ''; },
     async generateCopy() {
       if (this.copyLoading) return;
       if (!this.session) { this.copyError = "请先登录后再生成"; return; }
@@ -614,5 +647,6 @@ export default {
 .copy-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }.copy-empty h3 { margin: 20px 0 8px; }.copy-empty p { color: #989ba4; font-size: 12px; }
 .copy-output { flex: 1; margin: 15px 0 0; padding: 22px; border: 1px solid #eeebfa; border-radius: 14px; overflow: auto; background: #faf9ff; color: #292735; white-space: pre-wrap; word-break: break-word; font: 13px/1.9 "PingFang SC","Microsoft YaHei",sans-serif; }
 .recharge-overlay{position:fixed;inset:0;z-index:100;background:#11131a99;display:grid;place-items:center;padding:20px}.recharge-modal{width:min(820px,100%);max-height:92vh;overflow:auto;padding:25px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.recharge-modal>header{display:flex;justify-content:space-between;align-items:flex-start}.recharge-modal h2{margin:0 0 6px}.recharge-modal header p{margin:0;color:#858993;font-size:12px}.recharge-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.package-grid{margin:22px 0;display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.package-grid button{position:relative;min-height:142px;padding:17px 8px 12px;border:1px solid #e9eaf0;border-radius:13px;background:#fff;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer}.package-grid button.selected{border:2px solid #7657ff;background:#f8f6ff}.package-grid button>em{position:absolute;top:-9px;padding:3px 9px;border-radius:10px;background:#7657ff;color:#fff;font-size:9px;font-style:normal}.package-grid strong{font-size:22px}.package-grid span{color:#7657ff;font-size:12px}.package-grid small{color:#999;font-size:9px}.payment-box{padding:20px;border-radius:13px;background:#f7f7fa;display:flex;gap:24px;align-items:center}.payment-qr-link{flex:0 0 240px;display:flex;flex-direction:column;align-items:center;gap:7px;color:#7657ff;text-decoration:none;font-size:11px}.payment-qr-link img{width:240px;height:240px;padding:6px;object-fit:contain;background:#fff;border-radius:10px;box-shadow:0 4px 16px #2221}.payment-qr-link small{font-size:10px}.payment-box>div{flex:1}.payment-box p{margin:7px 0;color:#777b85;font-size:11px}.payment-box input{width:100%;height:38px;padding:0 11px;border:1px solid #dddfe6;border-radius:9px;background:#fff}.recharge-success{color:#17894c;font-size:12px}.order-list{margin-top:20px}.order-list h3{font-size:13px}.order-list>div{padding:9px 0;border-top:1px solid #eee;display:grid;grid-template-columns:1fr auto 60px;gap:10px;font-size:10px}.order-list em{text-align:right;font-style:normal}.order-list em.paid{color:#17894c}.order-list em.pending{color:#d38316}.order-list em.rejected{color:#d33}@media(max-width:700px){.package-grid{grid-template-columns:repeat(2,1fr)}.payment-box{align-items:stretch;flex-direction:column}.payment-qr-link{flex-basis:auto;align-self:center}.payment-qr-link img{width:min(280px,75vw);height:min(280px,75vw)}.order-list>div{grid-template-columns:1fr}.order-list em{text-align:left}}
+.history-modal{width:min(760px,100%);max-height:88vh;overflow:auto;padding:24px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.history-modal>header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:16px;border-bottom:1px solid #eee}.history-modal h2{margin:0 0 6px}.history-modal header p{margin:0;color:#858993;font-size:12px}.history-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.history-list article{padding:15px 0;border-bottom:1px solid #f0f1f4;display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center}.history-icon{width:42px;height:42px;border-radius:11px;background:#f0ecff;color:#7657ff;display:grid;place-items:center;font-weight:700}.history-info{min-width:0}.history-info>div{display:flex;align-items:center;gap:8px}.history-info em{padding:2px 7px;border-radius:8px;background:#fff3dc;color:#b36b00;font-size:9px;font-style:normal}.history-info em.completed{background:#eaf8ef;color:#17894c}.history-info em.failed{background:#fff0f0;color:#c44}.history-info p{margin:6px 0;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}.history-info small{color:#999;font-size:9px}.history-list article>strong{color:#7657ff;font-size:12px}.history-loading,.history-empty{padding:70px 20px;text-align:center;color:#999;font-size:12px}@media(max-width:560px){.history-list article{grid-template-columns:36px 1fr}.history-icon{width:36px;height:36px}.history-list article>strong{grid-column:2}}
 @media(max-width:900px){.copywriter-view{grid-template-columns:1fr;height:auto}.copy-result-card{min-height:520px}}@media(max-width:560px){.copywriter-view{padding:10px}.copy-form-card,.copy-result-card{padding:16px}.copy-grid{grid-template-columns:1fr}}
 </style>
