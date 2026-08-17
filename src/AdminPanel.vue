@@ -57,6 +57,12 @@
       <div class="lifecycle-actions"><button class="export" :disabled="lifecycleExporting" @click="exportBusinessData">{{ lifecycleExporting ? '正在导出…' : '下载业务数据备份（JSON）' }}</button><button class="cleanup" :disabled="lifecycleCleaning || !(lifecyclePreview.assetFiles || lifecyclePreview.closedSupport)" @click="cleanupExpiredData">{{ lifecycleCleaning ? '正在清理…' : '清理预览中的过期数据' }}</button></div>
       <p class="lifecycle-note">业务备份包含敏感用户和订单信息，请保存到加密磁盘，不要上传到公开网盘或发送给无关人员。备份文件记录作品链接，不包含图片、GIF和视频的实际文件内容。</p>
     </section>
+    <section class="content-safety-card">
+      <div class="admin-section-title"><div><h3>内容审核与拦截记录</h3><p>在扣算力和调用第三方模型之前拦截明显高风险提示词；通用规则由系统维护</p></div><button @click="loadContentSafety">刷新记录</button></div>
+      <div class="safety-settings"><label class="safety-switch"><input v-model="safetySettings.active" type="checkbox" /> 启用生成前内容审核</label><label>自定义禁用词（每行一个）<textarea v-model="safetyTermsText" maxlength="5000" placeholder="例如：需要额外禁止的品牌仿冒词或业务风险词"></textarea></label><button :disabled="safetySaving" @click="saveContentSafety">{{ safetySaving ? '保存中…' : '保存审核设置' }}</button></div>
+      <div class="safety-table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>功能</th><th>风险类型</th><th>内容片段</th></tr></thead><tbody><tr v-for="item in moderationEvents" :key="item.id"><td>{{ formatDate(item.created_at) }}</td><td>{{ item.email }}</td><td>{{ analyticsActionName(item.source) }}</td><td><b>{{ item.category }}</b></td><td><p>{{ item.content_excerpt }}</p></td></tr><tr v-if="!moderationEvents.length"><td colspan="5">暂无内容拦截记录</td></tr></tbody></table></div>
+      <p class="safety-note">当前审核重点覆盖明确的未成年人色情、伪造证件、诈骗盗取、露骨色情、极端暴力和危险违法活动。自动审核不能替代人工判断，上传图片本身暂未进行视觉识别。</p>
+    </section>
     <section class="referral-admin-card">
       <div class="admin-section-title"><div><h3>邀请奖励与预算</h3><p>控制双方奖励、每月总预算和单个邀请人的奖励人数</p></div><button @click="loadReferrals">刷新记录</button></div>
       <div class="referral-admin-stats"><div><span>邀请总数</span><b>{{ referralStats.total || 0 }}</b></div><div><span>已发奖励</span><b>{{ referralStats.rewarded || 0 }}</b></div><div><span>本月已用预算</span><b>{{ referralStats.monthSpent || 0 }} 点</b></div><div><span>本月剩余预算</span><b>{{ Math.max(0, (referralSettings.monthly_budget || 0) - (referralStats.monthSpent || 0)) }} 点</b></div></div>
@@ -150,7 +156,7 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, analyticsDays: 30, analyticsLoading: false, analytics: { metrics: {}, byAction: [], trend: [], freshness: null }, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', lifecycleSettings: { generated_asset_days: 90, closed_support_days: 365, last_cleanup_at: null }, lifecyclePreview: { assetRecords: 0, assetFiles: 0, closedSupport: 0 }, lifecycleSaving: false, lifecycleCleaning: false, lifecycleExporting: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, analyticsDays: 30, analyticsLoading: false, analytics: { metrics: {}, byAction: [], trend: [], freshness: null }, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', lifecycleSettings: { generated_asset_days: 90, closed_support_days: 365, last_cleanup_at: null }, lifecyclePreview: { assetRecords: 0, assetFiles: 0, closedSupport: 0 }, lifecycleSaving: false, lifecycleCleaning: false, lifecycleExporting: false, safetySettings: { active: true, custom_blocked_terms: [] }, safetyTermsText: '', safetySaving: false, moderationEvents: [], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
@@ -161,7 +167,7 @@ export default {
     uptimeText() { const seconds = Number(this.systemHealth.uptimeSeconds || 0); const days = Math.floor(seconds / 86400); const hours = Math.floor(seconds % 86400 / 3600); return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${Math.floor(seconds % 3600 / 60)} 分钟` },
     analyticsMargin() { const revenue = Number(this.analytics.metrics.netRevenueFen || 0); return revenue ? Math.round(Number(this.analytics.metrics.estimatedGrossProfitFen || 0) / revenue * 100) : 0 }
   },
-  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
+  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadContentSafety(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
@@ -214,6 +220,33 @@ export default {
       try { const response = await fetch('/api/admin/data-lifecycle/cleanup', { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ confirm: 'CLEANUP_EXPIRED_DATA' }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '清理过期数据失败'); window.alert(`清理完成：${data.cleaned.assetFiles} 个作品文件，${data.cleaned.closedSupport} 个客服会话`); await this.loadLifecycle() }
       catch (error) { this.errorMessage = error.message }
       finally { this.lifecycleCleaning = false }
+    },
+    async loadContentSafety() {
+      try {
+        const response = await fetch('/api/admin/content-safety', { headers: this.headers() })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '读取内容审核设置失败')
+        this.safetySettings = data.settings || { active: true, custom_blocked_terms: [] }
+        this.safetyTermsText = (this.safetySettings.custom_blocked_terms || []).join('\n')
+        this.moderationEvents = data.events || []
+      } catch (error) { this.errorMessage = error.message }
+    },
+    async saveContentSafety() {
+      this.safetySaving = true; this.errorMessage = ''
+      try {
+        const customBlockedTerms = this.safetyTermsText.split(/\r?\n|，|,/).map(item => item.trim()).filter(Boolean)
+        const response = await fetch('/api/admin/content-safety', {
+          method: 'PATCH',
+          headers: this.headers({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ active: this.safetySettings.active, custom_blocked_terms: customBlockedTerms })
+        })
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '保存内容审核设置失败')
+        this.safetySettings = data.settings
+        this.safetyTermsText = (data.settings.custom_blocked_terms || []).join('\n')
+        await this.loadContentSafety()
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.safetySaving = false }
     },
     money(fen) { return (Number(fen || 0) / 100).toFixed(2) },
     budgetPercent(used, limit) { return Number(limit) > 0 ? Math.min(100, Math.round(Number(used || 0) / Number(limit) * 100)) : 0 },

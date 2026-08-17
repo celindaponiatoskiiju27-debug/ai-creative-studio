@@ -80,6 +80,29 @@ function allowPromptEnhance(userId) {
   return true
 }
 
+const SAFETY_RULES = [
+  { category: '未成年人色情', rule: 'minor_sexual', pattern: /(未成年|儿童|幼女|幼童|小学生|初中生).{0,20}(色情|裸体|裸照|性行为|成人视频)/i },
+  { category: '伪造凭证', rule: 'forged_documents', pattern: /(伪造|仿造|制作假).{0,20}(身份证|护照|公章|发票|银行流水|付款凭证|合同|学历证书)/i },
+  { category: '诈骗与盗取', rule: 'fraud_theft', pattern: /(诈骗话术|钓鱼网站|盗取账号|盗刷信用卡|骗取验证码|洗钱教程|信用卡套现教程)/i },
+  { category: '露骨色情', rule: 'explicit_sexual', pattern: /(露骨色情|成人视频|性交画面|强奸|乱伦|兽交)/i },
+  { category: '极端暴力', rule: 'extreme_violence', pattern: /(肢解|斩首|虐杀|血腥尸体).{0,20}(教程|画面|视频|图片|细节)/i },
+  { category: '危险违法活动', rule: 'dangerous_illegal', pattern: /(制造炸弹|自制枪支|制毒教程|贩卖毒品|黑客入侵教程|勒索软件教程)/i }
+]
+
+async function enforceContentSafety(req, content, source) {
+  const text = String(content || '').trim()
+  if (!text) return
+  const { data: settings, error: settingsError } = await supabaseAdmin().from('content_safety_settings').select('active,custom_blocked_terms').eq('id', true).single()
+  if (settingsError) throw settingsError
+  if (!settings.active) return
+  let match = SAFETY_RULES.find(item => item.pattern.test(text))
+  if (!match) { const term = (settings.custom_blocked_terms || []).find(item => item && text.toLowerCase().includes(String(item).toLowerCase())); if (term) match = { category: '自定义禁用词', rule: `custom:${String(term).slice(0, 80)}` } }
+  if (!match) return
+  const { error } = await supabaseAdmin().from('moderation_events').insert({ user_id: req.user?.id || null, source, category: match.category, matched_rule: match.rule, content_excerpt: text.slice(0, 500), action: 'blocked', ip_address: req.ip || req.socket.remoteAddress || null })
+  if (error) console.error('[moderation-log]', error.message)
+  const blocked = new Error(`内容包含平台禁止的“${match.category}”信息，请修改后再试`); blocked.status = 422; throw blocked
+}
+
 function supabaseAdmin() {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     const error = new Error('服务端尚未配置 Supabase')
@@ -547,6 +570,30 @@ app.get('/api/admin/business-analytics', requireUser, requireAdmin, async (req, 
     completedUsage.forEach(item => { const row = trend.get(dateKey(item.created_at)); if (row) { row.costFen += Number(item.estimated_cost_fen || 0); row.generations += 1 } })
     periodProfiles.forEach(item => { const row = trend.get(dateKey(item.created_at)); if (row) row.registrations += 1 })
     res.json({ days, freshness: new Date().toISOString(), metrics: { totalUsers: profiles?.length || 0, newUsers: periodProfiles.length, payingUsers: payingUsers.size, newUserConversionRate: periodProfiles.length ? convertedNewUsers / periodProfiles.length : 0, repeatPurchaseRate: payingUsers.size ? repeatPayingUsers / payingUsers.size : 0, paidOrders: periodOrders.length, revenueFen, refundFen, netRevenueFen, estimatedCostFen, estimatedGrossProfitFen: netRevenueFen - estimatedCostFen, successRate: allFinished ? completedUsage.length / allFinished : 0, completedGenerations: completedUsage.length }, byAction: [...byActionMap.values()].sort((a, b) => b.completed - a.completed), trend: [...trend.values()] })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/content-safety', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const [{ data: settings, error: settingsError }, { data: events, error: eventsError }] = await Promise.all([
+      supabaseAdmin().from('content_safety_settings').select('*').eq('id', true).single(),
+      supabaseAdmin().from('moderation_events').select('id,user_id,source,category,matched_rule,content_excerpt,action,created_at').order('created_at', { ascending: false }).limit(100)
+    ])
+    if (settingsError) throw settingsError; if (eventsError) throw eventsError
+    const userIds = [...new Set((events || []).map(item => item.user_id).filter(Boolean))]
+    const { data: profiles, error: profileError } = userIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', userIds) : { data: [], error: null }
+    if (profileError) throw profileError
+    const emails = new Map((profiles || []).map(item => [item.id, item.email]))
+    res.json({ settings, events: (events || []).map(item => ({ ...item, email: emails.get(item.user_id) || '匿名/已删除用户' })) })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/content-safety', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const terms = [...new Set((Array.isArray(req.body.custom_blocked_terms) ? req.body.custom_blocked_terms : []).map(item => String(item).trim().slice(0, 80)).filter(Boolean))].slice(0, 200)
+    const { data, error } = await supabaseAdmin().from('content_safety_settings').update({ active: req.body.active === true, custom_blocked_terms: terms, updated_by: req.user.id, updated_at: new Date().toISOString() }).eq('id', true).select('*').single()
+    if (error) throw error
+    res.json({ settings: data })
   } catch (error) { next(error) }
 })
 
@@ -1109,6 +1156,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (!product) return res.status(400).json({ error: '请填写商品名称' })
     if (!features) return res.status(400).json({ error: '请填写商品核心卖点' })
     const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
+    await enforceContentSafety(req, prompt, 'copy_generation')
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'copy_generation' }, CREDIT_PRICES.copy, 1)
     const stream = await textClient().responses.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
@@ -1153,6 +1201,7 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
     const prompt = String(req.body.prompt || '').trim()
     if (!prompt) return res.status(400).json({ error: '请先输入需要润色的画面描述' })
     if (prompt.length > 1000) return res.status(400).json({ error: '画面描述不能超过 1000 字' })
+    await enforceContentSafety(req, prompt, 'prompt_enhance')
 
     const dateParts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -1204,6 +1253,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
   let usageId
   try {
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
+    await enforceContentSafety(req, req.body.prompt, 'image_generation')
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_generation' }, CREDIT_PRICES.image * count, count)
     const generated = mockEnabled
@@ -1224,6 +1274,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
   try {
     if (!req.files?.length) return res.status(400).json({ error: '请上传至少一张参考图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
+    await enforceContentSafety(req, req.body.prompt, 'image_edit')
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_edit' }, CREDIT_PRICES.imageEdit * count, count)
     let generated
@@ -1248,6 +1299,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     const mode = req.body.mode === 'text' ? 'text' : 'image'
     if (mode === 'image' && !req.file) return res.status(400).json({ error: '请上传一张静态图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面运动描述' })
+    await enforceContentSafety(req, req.body.prompt, mode === 'image' ? 'gif_generation' : 'video_generation')
     const credits = mode === 'image' ? CREDIT_PRICES.gif : CREDIT_PRICES.video
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: mode === 'image' ? 'gif_generation' : 'video_generation' }, credits, 1)
     const videoUrl = await generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio })
