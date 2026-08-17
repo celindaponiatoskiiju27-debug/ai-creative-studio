@@ -833,7 +833,7 @@ export default {
         this.copyResult = data.copy;
         this.trackEvent('generation_success', { type: 'copy' })
         if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
-      } catch (error) { this.copyError = error.message; }
+      } catch (error) { this.copyError = error.message; await this.loadProfile().catch(() => {}); }
       finally { this.copyLoading = false; }
     },
     async copyCopyResult() {
@@ -1117,6 +1117,7 @@ export default {
         this.state = "done";
       } catch (error) {
         this.errorMessage = error.message;
+        await this.loadProfile().catch(() => {});
         this.state = this.results.length ? "done" : "empty";
       } finally {
         this.loading = false;

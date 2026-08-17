@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 
 const app = express()
 app.disable('x-powered-by')
@@ -23,6 +24,11 @@ const upload = multer({
 })
 
 app.use(cors({ origin: ['http://localhost:5174', 'http://127.0.0.1:5174'] }))
+app.use((req, res, next) => {
+  req.requestId = String(req.headers['x-request-id'] || randomUUID()).slice(0, 100)
+  res.setHeader('X-Request-Id', req.requestId)
+  next()
+})
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('X-Frame-Options', 'DENY')
@@ -401,6 +407,17 @@ async function finishGeneration(usageId, success) {
   if (success) {
     const { error: referralError } = await supabaseAdmin().rpc('complete_referral_reward', { p_usage_id: usageId })
     if (referralError && !/complete_referral_reward/i.test(referralError.message)) console.error('[referral-reward]', referralError.message)
+  }
+}
+
+async function rollbackGeneration(usageId, error) {
+  if (!usageId) return
+  try {
+    await finishGeneration(usageId, false)
+    error.creditsRefunded = true
+  } catch (refundError) {
+    error.refundPending = true
+    console.error('[refund]', usageId, refundError.message)
   }
 }
 
@@ -1197,7 +1214,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     const profile = await profileFor(req.user.id)
     res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
-    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    await rollbackGeneration(usageId, error)
     next(error)
   }
 })
@@ -1252,7 +1269,7 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
       freeRemaining: Math.max(0, 2 - (usedToday || 0))
     })
   } catch (error) {
-    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    await rollbackGeneration(usageId, error)
     next(error)
   }
 })
@@ -1272,7 +1289,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     const profile = await profileFor(req.user.id)
     res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
-    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    await rollbackGeneration(usageId, error)
     next(error)
   }
 })
@@ -1296,7 +1313,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     const profile = await profileFor(req.user.id)
     res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
-    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    await rollbackGeneration(usageId, error)
     next(error)
   }
 })
@@ -1318,7 +1335,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     const profile = await profileFor(req.user.id)
     res.json({ ...payload, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
-    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    await rollbackGeneration(usageId, error)
     next(error)
   }
 })
@@ -1330,11 +1347,21 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(rootDir, 'dist', 'index.html'))
 })
 
-app.use((error, _req, res, _next) => {
+app.use((error, req, res, _next) => {
   const status = error.status || error.statusCode || (error.code === 'LIMIT_FILE_SIZE' ? 413 : 500)
   const message = error.code === 'LIMIT_FILE_SIZE' ? '图片不能超过 10MB' : (error.error?.message || error.message || '生成失败，请稍后重试')
-  console.error('[api]', status, message)
-  res.status(status).json({ error: message })
+  let clientMessage = message
+  if (error.creditsRefunded) clientMessage += '；本次扣除的算力已自动退还，可以修改内容后重试'
+  else if (error.refundPending) clientMessage += '；算力退款正在处理中，请稍后查看余额'
+  if (status >= 500) clientMessage += `（问题编号：${req.requestId}）`
+  console.error('[api]', req.requestId, status, message)
+  res.status(status).json({
+    error: clientMessage,
+    requestId: req.requestId,
+    retryable: status === 429 || status >= 500,
+    creditsRefunded: Boolean(error.creditsRefunded),
+    refundPending: Boolean(error.refundPending)
+  })
 })
 
 app.listen(port, () => console.log(`AI API server running at http://localhost:${port}`))
