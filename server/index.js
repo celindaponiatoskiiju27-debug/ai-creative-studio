@@ -1162,6 +1162,10 @@ app.post('/api/billing/orders', requireUser, upload.single('proof'), async (req,
     if (req.body.acceptedTerms !== 'true') return res.status(400).json({ error: '请先阅读并确认充值与退款规则' })
     const packages = await loadCreditPackages(true)
     const selected = packages.find(item => item.id === req.body.packageId)
+    await supabaseAdmin().from('recharge_orders').update({ status: 'cancelled' }).eq('user_id', req.user.id).eq('status', 'pending').lt('expires_at', new Date().toISOString())
+    const { data: pendingOrder, error: pendingError } = await supabaseAdmin().from('recharge_orders').select('id,order_no,expires_at').eq('user_id', req.user.id).eq('status', 'pending').maybeSingle()
+    if (pendingError) throw pendingError
+    if (pendingOrder) return res.status(409).json({ error: `你已有一笔待审核订单 ${pendingOrder.order_no}，请等待管理员审核，不要重复付款或提交` })
     if (!selected) return res.status(400).json({ error: '充值套餐不存在' })
     const firstPurchaseOnly = selected.first_purchase_only ?? selected.firstPurchaseOnly
     const priceFen = selected.price_fen ?? selected.priceFen
@@ -1182,7 +1186,11 @@ app.post('/api/billing/orders', requireUser, upload.single('proof'), async (req,
       order_no: orderNo, user_id: req.user.id, package_id: selected.id, amount_fen: priceFen,
       credits: selected.credits, payment_provider: 'manual', payment_reference: reference, payment_proof_path: proofPath, terms_version: LEGAL_VERSION, terms_accepted_at: new Date().toISOString()
     }).select('id,order_no,package_id,amount_fen,credits,status,created_at,expires_at').single()
-    if (error) throw error
+    if (error) {
+      await supabaseAdmin().storage.from('payment-proofs').remove([proofPath]).catch(() => {})
+      if (error.code === '23505') return res.status(409).json({ error: '你已有一笔待审核充值订单，请等待管理员审核' })
+      throw error
+    }
     res.status(201).json({ order: data })
   } catch (error) { next(error) }
 })
