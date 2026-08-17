@@ -1,5 +1,6 @@
 .auth-overlay{position:fixed;inset:0;z-index:100;background:rgba(15,16,23,.72);backdrop-filter:blur(14px);display:grid;place-items:center;padding:20px}
-.auth-card{width:min(420px,100%);padding:34px;border-radius:24px;background:#fff;box-shadow:0 30px 90px #0005;display:flex;flex-direction:column}
+.auth-card{position:relative;width:min(420px,100%);padding:34px;border-radius:24px;background:#fff;box-shadow:0 30px 90px #0005;display:flex;flex-direction:column}
+.auth-close{position:absolute;top:16px;right:18px;width:34px;height:34px;border:0;border-radius:10px;background:#f3f3f7;color:#666;font-size:22px;line-height:1;cursor:pointer}.auth-close:hover{background:#e9e9ef;color:#222}
 .auth-logo{width:48px;height:48px;border-radius:15px;display:grid;place-items:center;background:linear-gradient(145deg,#9d77ff,#6849ff);color:#fff;font-size:24px}
 .auth-card h2{margin:22px 0 8px;font-size:25px}.auth-card>p{margin:0 0 22px;color:#858993;font-size:13px}
 .auth-card label{margin:12px 0 7px;font-size:12px;font-weight:700}.auth-card input{height:46px;padding:0 13px;border:1px solid #e9eaf0;border-radius:11px;outline:0;font:14px inherit}

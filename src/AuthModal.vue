@@ -1,6 +1,7 @@
 <template>
-  <div class="auth-overlay">
+  <div class="auth-overlay" @click.self="$emit('close')">
     <form class="auth-card" @submit.prevent="submit">
+      <button type="button" class="auth-close" aria-label="关闭登录窗口" @click="$emit('close')">×</button>
       <div class="auth-logo">✦</div>
       <h2>{{ registerMode ? '创建账号' : '欢迎回来' }}</h2>
       <p>{{ registerMode ? '邮箱首次注册可获得 10 点免费算力' : '登录后继续你的 AI 创作' }}</p>

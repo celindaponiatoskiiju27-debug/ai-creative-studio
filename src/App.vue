@@ -22,15 +22,15 @@
         </template>
       </nav>
       <div class="sidebar-bottom">
-        <div class="credit-card">
+        <div v-if="session" class="credit-card">
           <div><span>账户算力</span><b>{{ credits }}</b></div>
           <div class="progress"><i :style="{ width: creditProgress }" /></div>
           <small>图片低至 2 点，动图 6 点</small>
         </div>
-        <button class="profile" :title="profileEmail">
+        <button class="profile" :title="profileEmail" @click="!session && requestLogin('登录后可使用个人账户功能')">
           <span class="avatar">{{ avatarText }}</span
           ><span><b>{{ displayName }}</b><small>{{ accountLabel }} · {{ profileEmail }}</small></span
-          ><i @click.stop="logout">退出</i>
+          ><i v-if="session" @click.stop="logout">退出</i><i v-else>登录</i>
         </button>
       </div>
     </aside>
@@ -44,6 +44,7 @@
         <div class="top-actions">
           <button v-if="session" class="credit-pill"><span>✦</span> {{ credits }} 点</button>
           <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
+          <button v-else class="ghost-btn" @click="requestLogin('登录后可使用完整功能')">登录 / 注册</button>
           <button class="ghost-btn" @click="openSupport">帮助中心</button
           ><button class="primary-small" @click="openRecharge">获取算力</button>
         </div>
@@ -294,7 +295,7 @@
         <div class="support-composer"><textarea v-model="supportDraft" maxlength="2000" placeholder="请输入你的问题…" @keydown.ctrl.enter.prevent="sendSupportMessage"></textarea><button :disabled="supportSending || !supportDraft.trim()" @click="sendSupportMessage">{{ supportSending ? '发送中…' : '发送' }}</button></div>
       </section>
     </div>
-    <AuthModal v-if="authReady && !session" />
+    <AuthModal v-if="authReady && !session && authOpen" @close="authOpen = false" />
     <div
       class="overlay"
       :class="{ show: menuOpen }"
@@ -380,6 +381,7 @@ export default {
       favorites: JSON.parse(localStorage.getItem("ai-favorites") || "[]"),
       errorMessage: "",
       authReady: false,
+      authOpen: false,
       session: null,
       profile: null,
       authSubscription: null,
@@ -459,7 +461,7 @@ export default {
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       this.session = session
       this.profile = null
-      if (session) await this.loadProfile()
+      if (session) { this.authOpen = false; await this.loadProfile() }
     })
     this.authSubscription = listener.subscription
     this.authReady = true
@@ -470,6 +472,11 @@ export default {
     this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
+    requestLogin(message = '请先登录后继续') {
+      this.errorMessage = message
+      this.authOpen = true
+      return false
+    },
     async loadProfile() {
       try {
         const response = await fetch('/api/me', { headers: this.authHeaders() })
@@ -482,7 +489,7 @@ export default {
       return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
     },
     async openRecharge() {
-      if (!this.session) { this.errorMessage = '请先登录后再充值'; return; }
+      if (!this.session) { this.requestLogin('请先登录后再充值'); return; }
       this.rechargeOpen = true; this.rechargeMessage = ''; this.rechargeError = false;
       try {
         const [configResponse, ordersResponse] = await Promise.all([
@@ -512,7 +519,7 @@ export default {
     },
     orderStatus(status) { return ({ pending: '待审核', paid: '已到账', rejected: '未通过', cancelled: '已取消' })[status] || status; },
     async openHistory(onlyCopy = false) {
-      if (!this.session) { this.errorMessage = '请先登录后查看生成记录'; return; }
+      if (!this.session) { this.requestLogin('请先登录后查看生成记录'); return; }
       this.historyOnlyCopy = onlyCopy; this.historyOpen = true; this.historyLoading = true; this.historyError = '';
       try {
         const response = await fetch('/api/usage', { headers: this.authHeaders() }); const data = await response.json();
@@ -535,7 +542,7 @@ export default {
       setTimeout(() => { if (this.copiedHistoryId === record.id) this.copiedHistoryId = ''; }, 1500);
     },
     async openSupport() {
-      if (!this.session) { this.errorMessage = '请先登录后联系人工客服'; return; }
+      if (!this.session) { this.requestLogin('请先登录后联系人工客服'); return; }
       this.supportOpen = true; this.supportLoading = true; this.supportError = '';
       await this.loadSupportMessages(); this.supportLoading = false;
       if (this.supportTimer) clearInterval(this.supportTimer)
@@ -565,7 +572,7 @@ export default {
     },
     async generateCopy() {
       if (this.copyLoading) return;
-      if (!this.session) { this.copyError = "请先登录后再生成"; return; }
+      if (!this.session) { this.copyError = "请先登录后再生成"; this.requestLogin(this.copyError); return; }
       if (this.credits < 1) { this.copyError = "算力不足，请充值后再试"; return; }
       if (!this.copyProduct.trim()) { this.copyError = "请填写商品名称"; return; }
       if (!this.copyFeatures.trim()) { this.copyError = "请填写商品核心卖点"; return; }
@@ -589,6 +596,7 @@ export default {
     },
     async logout() { if (supabase) await supabase.auth.signOut() },
     go(p) {
+      if (!this.session && ['works', 'favorites'].includes(p)) { this.requestLogin('请先登录后查看个人资产'); return; }
       this.page = p;
       this.mode = 'text';
       this.menuOpen = false;
@@ -604,7 +612,7 @@ export default {
     },
     async enhance() {
       if (this.enhanceLoading) return;
-      if (!this.session) { this.errorMessage = "请先登录后再使用 AI 润色"; return; }
+      if (!this.session) { this.requestLogin("请先登录后再使用 AI 润色"); return; }
       const prompt = this.prompt.trim();
       if (!prompt) { this.errorMessage = "请先输入需要润色的画面描述"; return; }
       this.enhanceLoading = true;
@@ -664,7 +672,7 @@ export default {
     },
     async generate() {
       if (this.loading) return;
-      if (!this.session) { this.errorMessage = "请先登录后再生成"; return; }
+      if (!this.session) { this.requestLogin("请先登录后再生成"); return; }
       if (!this.prompt.trim()) { this.errorMessage = "请输入画面描述"; return; }
       if (this.page === "video" && this.videoMode === 'image' && !this.uploadFile) { this.errorMessage = "请先上传一张静态图片"; return; }
       if (this.credits < this.requiredCredits) { this.errorMessage = "算力不足，请充值后再试"; return; }
