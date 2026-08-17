@@ -845,6 +845,10 @@ export default {
     go(p) {
       if (!this.session && ['works', 'favorites'].includes(p)) { this.requestLogin('请先登录后查看个人资产'); return; }
       this.page = p;
+      const pageName = this.pages[p]?.[0] || '灵境 AI';
+      document.title = p === 'home' ? '灵境 AI｜电商文案、商品图、GIF 与视频生成' : `${pageName}｜灵境 AI`;
+      const description = document.querySelector('meta[name="description"]');
+      if (description) description.content = this.pages[p]?.[1] || '灵境 AI 一站式电商 AI 内容创作平台';
       this.mode = 'text';
       this.menuOpen = false;
       if (p === 'canvas') this.$nextTick(this.drawDesignCanvas);
