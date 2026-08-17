@@ -24,6 +24,13 @@
         <label>每日预算（元）<input v-model.number="costDailyYuan" type="number" min="0" step="1" /></label>
         <label>每月预算（元）<input v-model.number="costMonthlyYuan" type="number" min="0" step="1" /></label>
       </div>
+      <div class="risk-settings-grid">
+        <label>单用户每日次数<input v-model.number="costSettings.per_user_daily_request_limit" type="number" min="0" step="1" /><small>0 表示不限</small></label>
+        <label>单用户每日成本（元）<input v-model.number="costUserDailyYuan" type="number" min="0" step="1" /><small>0 表示不限</small></label>
+        <label>同时进行任务数<input v-model.number="costSettings.max_pending_per_user" type="number" min="1" max="100" step="1" /></label>
+        <label>两次提交间隔（秒）<input v-model.number="costSettings.min_interval_seconds" type="number" min="0" step="1" /></label>
+        <label>每小时失败上限<input v-model.number="costSettings.failure_hour_limit" type="number" min="0" step="1" /><small>0 表示不限</small></label>
+      </div>
       <div class="action-cost-grid"><article v-for="item in costActions" :key="item.id" :class="{ disabled: isCostActionDisabled(item.id) }"><div><b>{{ item.name }}</b><label><input :checked="!isCostActionDisabled(item.id)" type="checkbox" @change="toggleCostAction(item.id, $event.target.checked)" /> 允许调用</label></div><label>单次预估成本（元）<input v-model.number="costActionYuan[item.id]" type="number" min="0" step="0.01" /></label><small>本月累计 ¥{{ money(costStats.byAction && costStats.byAction[item.id]) }}</small></article></div>
       <button class="cost-save" :disabled="costSaving" @click="saveCostControl">{{ costSaving ? '保存中…' : '保存成本与熔断设置' }}</button>
       <p class="cost-note">建议先按供应商账单保守填写，并每周校准一次。预算填写 0 表示该周期不设上限。</p>
@@ -97,7 +104,7 @@
     </div>
     <div class="admin-table-wrap">
       <table class="admin-table">
-        <thead><tr><th>用户</th><th>剩余算力</th><th>累计消耗</th><th>图片数</th><th>最近使用</th><th>调整算力</th></tr></thead>
+        <thead><tr><th>用户</th><th>剩余算力</th><th>累计消耗</th><th>图片数</th><th>最近使用</th><th>调整算力</th><th>生成风控</th></tr></thead>
         <tbody>
           <tr v-for="user in users" :key="user.id">
             <td><b>{{ user.email || '未设置邮箱' }}</b><small>{{ user.is_admin ? '管理员' : '普通用户' }}</small></td>
@@ -108,8 +115,9 @@
             <td>
               <div class="credit-adjust"><input v-model.number="adjustments[user.id]" type="number" placeholder="如 10 或 -5" /><button :disabled="busyId === user.id" @click="adjust(user)">确认</button></div>
             </td>
+            <td><div class="user-risk-action"><small v-if="isUserBlocked(user)">限制至 {{ formatDate(user.generation_blocked_until) }}<br />{{ user.generation_block_reason }}</small><button :class="{ unblock: isUserBlocked(user) }" :disabled="busyId === user.id" @click="toggleUserBlock(user)">{{ isUserBlocked(user) ? '解除限制' : '限制生成' }}</button></div></td>
           </tr>
-          <tr v-if="!loading && !users.length"><td colspan="6" class="admin-empty">暂无用户</td></tr>
+          <tr v-if="!loading && !users.length"><td colspan="7" class="admin-empty">暂无用户</td></tr>
         </tbody>
       </table>
     </div>
@@ -120,7 +128,7 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
@@ -137,13 +145,13 @@ export default {
     isCostActionDisabled(action) { return (this.costSettings.disabled_actions || []).includes(action) },
     toggleCostAction(action, enabled) { const current = new Set(this.costSettings.disabled_actions || []); enabled ? current.delete(action) : current.add(action); this.costSettings.disabled_actions = [...current] },
     async loadCostControl() {
-      try { const response = await fetch('/api/admin/cost-control', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取成本设置失败'); this.costSettings = data.settings; this.costStats = data.stats; this.costDailyYuan = Number(data.settings.daily_limit_fen || 0) / 100; this.costMonthlyYuan = Number(data.settings.monthly_limit_fen || 0) / 100; this.costActionYuan = Object.fromEntries(this.costActions.map(item => [item.id, Number(data.settings.action_costs?.[item.id] || 0) / 100])); }
+      try { const response = await fetch('/api/admin/cost-control', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取成本设置失败'); this.costSettings = data.settings; this.costStats = data.stats; this.costDailyYuan = Number(data.settings.daily_limit_fen || 0) / 100; this.costMonthlyYuan = Number(data.settings.monthly_limit_fen || 0) / 100; this.costUserDailyYuan = Number(data.settings.per_user_daily_cost_limit_fen || 0) / 100; this.costActionYuan = Object.fromEntries(this.costActions.map(item => [item.id, Number(data.settings.action_costs?.[item.id] || 0) / 100])); }
       catch (error) { this.errorMessage = error.message }
     },
     async saveCostControl() {
-      const values = [this.costDailyYuan, this.costMonthlyYuan, ...Object.values(this.costActionYuan)]; if (!values.every(value => Number.isFinite(Number(value)) && Number(value) >= 0)) { this.errorMessage = '预算和成本不能为负数'; return }
+      const values = [this.costDailyYuan, this.costMonthlyYuan, this.costUserDailyYuan, ...Object.values(this.costActionYuan)]; if (!values.every(value => Number.isFinite(Number(value)) && Number(value) >= 0)) { this.errorMessage = '预算和成本不能为负数'; return }
       this.costSaving = true; this.errorMessage = ''
-      try { const body = { ...this.costSettings, daily_limit_fen: Math.round(Number(this.costDailyYuan) * 100), monthly_limit_fen: Math.round(Number(this.costMonthlyYuan) * 100), action_costs: Object.fromEntries(this.costActions.map(item => [item.id, Math.round(Number(this.costActionYuan[item.id] || 0) * 100)])) }; const response = await fetch('/api/admin/cost-control', { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存成本设置失败'); this.costSettings = data.settings; await this.loadCostControl(); }
+      try { const body = { ...this.costSettings, daily_limit_fen: Math.round(Number(this.costDailyYuan) * 100), monthly_limit_fen: Math.round(Number(this.costMonthlyYuan) * 100), per_user_daily_cost_limit_fen: Math.round(Number(this.costUserDailyYuan) * 100), action_costs: Object.fromEntries(this.costActions.map(item => [item.id, Math.round(Number(this.costActionYuan[item.id] || 0) * 100)])) }; const response = await fetch('/api/admin/cost-control', { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存成本设置失败'); this.costSettings = data.settings; await this.loadCostControl(); }
       catch (error) { this.errorMessage = error.message }
       finally { this.costSaving = false }
     },
@@ -314,6 +322,16 @@ export default {
       finally { this.busyId = '' }
     },
     orderStatus(status) { return ({ paid: '已到账', rejected: '已拒绝', cancelled: '已取消' })[status] || status },
+    isUserBlocked(user) { return Boolean(user.generation_blocked_until && new Date(user.generation_blocked_until) > new Date()) },
+    async toggleUserBlock(user) {
+      const blocked = this.isUserBlocked(user); let hours = 24; let reason = ''
+      if (!blocked) { hours = Number(window.prompt('限制多少小时？', '24')); if (!Number.isFinite(hours) || hours <= 0) return; reason = window.prompt('请输入限制原因：', '异常频繁调用') || '异常频繁调用'; if (!window.confirm(`确认限制 ${user.email} 的生成功能 ${hours} 小时吗？`)) return }
+      else if (!window.confirm(`确认解除 ${user.email} 的生成限制吗？`)) return
+      this.busyId = user.id; this.errorMessage = ''
+      try { const response = await fetch(`/api/admin/users/${user.id}/generation-block`, { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ block: !blocked, hours, reason }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '更新账号风控失败'); Object.assign(user, data.block) }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.busyId = '' }
+    },
     async adjust(user) {
       const amount = Number(this.adjustments[user.id])
       if (!Number.isInteger(amount) || amount === 0) { this.errorMessage = '请输入非零整数，例如 10 或 -5'; return }

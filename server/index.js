@@ -131,6 +131,12 @@ async function reserveGeneration(userId, body, requestedCredits, outputCount) {
     else if (error.message?.includes('MONTHLY_BUDGET_REACHED')) { error.status = 503; error.message = '本月生成额度已用完，请联系管理员' }
     else if (error.message?.includes('GENERATION_PAUSED')) { error.status = 503; error.message = '生成服务正在维护，请稍后再试' }
     else if (error.message?.includes('ACTION_DISABLED')) { error.status = 503; error.message = '该生成功能暂时关闭，请稍后再试' }
+    else if (error.message?.includes('USER_GENERATION_BLOCKED')) { error.status = 403; error.message = '该账号的生成功能已被临时限制，请联系人工客服' }
+    else if (error.message?.includes('USER_DAILY_LIMIT_REACHED')) { error.status = 429; error.message = '今日生成次数已达上限，请明天再试' }
+    else if (error.message?.includes('USER_DAILY_COST_REACHED')) { error.status = 429; error.message = '今日个人生成额度已用完，请明天再试' }
+    else if (error.message?.includes('TOO_MANY_PENDING')) { error.status = 429; error.message = '已有任务正在生成，请完成后再提交' }
+    else if (error.message?.includes('TOO_FREQUENT')) { error.status = 429; error.message = '操作过于频繁，请稍候再试' }
+    else if (error.message?.includes('TOO_MANY_FAILURES')) { error.status = 429; error.message = '近期失败请求过多，已临时停止提交，请稍后再试' }
     throw error
   }
   if (body.action && data) {
@@ -454,7 +460,7 @@ app.get('/api/usage', requireUser, async (req, res, next) => {
 app.get('/api/admin/users', requireUser, requireAdmin, async (req, res, next) => {
   try {
     const search = String(req.query.search || '').trim()
-    let query = supabaseAdmin().from('profiles').select('id,email,credits,is_admin,created_at').order('created_at', { ascending: false }).limit(200)
+    let query = supabaseAdmin().from('profiles').select('id,email,credits,is_admin,generation_blocked_until,generation_block_reason,created_at').order('created_at', { ascending: false }).limit(200)
     if (search) query = query.ilike('email', `%${search}%`)
     const [{ data: users, error: usersError }, { data: usage, error: usageError }] = await Promise.all([
       query,
@@ -509,12 +515,20 @@ app.patch('/api/admin/cost-control', requireUser, requireAdmin, async (req, res,
     const allowedActions = ['copy_generation', 'prompt_enhance', 'image_generation', 'image_edit', 'gif_generation', 'video_generation']
     const dailyLimitFen = Number(req.body.daily_limit_fen)
     const monthlyLimitFen = Number(req.body.monthly_limit_fen)
+    const perUserDailyRequestLimit = Number(req.body.per_user_daily_request_limit)
+    const perUserDailyCostLimitFen = Number(req.body.per_user_daily_cost_limit_fen)
+    const maxPendingPerUser = Number(req.body.max_pending_per_user)
+    const minIntervalSeconds = Number(req.body.min_interval_seconds)
+    const failureHourLimit = Number(req.body.failure_hour_limit)
     const actionCosts = Object.fromEntries(allowedActions.map(action => [action, Number(req.body.action_costs?.[action])]))
     const disabledActions = [...new Set(Array.isArray(req.body.disabled_actions) ? req.body.disabled_actions.filter(action => allowedActions.includes(action)) : [])]
-    if (![dailyLimitFen, monthlyLimitFen, ...Object.values(actionCosts)].every(value => Number.isInteger(value) && value >= 0 && value <= 100000000)) return res.status(400).json({ error: '预算和预估成本必须是非负整数（单位：分）' })
+    if (![dailyLimitFen, monthlyLimitFen, perUserDailyRequestLimit, perUserDailyCostLimitFen, minIntervalSeconds, failureHourLimit, ...Object.values(actionCosts)].every(value => Number.isInteger(value) && value >= 0 && value <= 100000000) || !Number.isInteger(maxPendingPerUser) || maxPendingPerUser < 1 || maxPendingPerUser > 100) return res.status(400).json({ error: '预算、成本和风控限制必须是有效的非负整数' })
     const { data, error } = await supabaseAdmin().from('cost_control_settings').update({
       active: req.body.active === true, daily_limit_fen: dailyLimitFen, monthly_limit_fen: monthlyLimitFen,
-      action_costs: actionCosts, disabled_actions: disabledActions, updated_by: req.user.id, updated_at: new Date().toISOString()
+      action_costs: actionCosts, disabled_actions: disabledActions, per_user_daily_request_limit: perUserDailyRequestLimit,
+      per_user_daily_cost_limit_fen: perUserDailyCostLimitFen, max_pending_per_user: maxPendingPerUser,
+      min_interval_seconds: minIntervalSeconds, failure_hour_limit: failureHourLimit,
+      updated_by: req.user.id, updated_at: new Date().toISOString()
     }).eq('id', true).select('*').single()
     if (error) throw error
     res.json({ settings: data })
@@ -533,6 +547,19 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
     })
     if (error) throw error
     res.json({ credits: data })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/users/:id/generation-block', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const block = req.body.block === true
+    const hours = Math.min(24 * 365, Math.max(1, Number(req.body.hours) || 24))
+    const reason = String(req.body.reason || '管理员风控限制').trim().slice(0, 300)
+    if (req.params.id === req.user.id && block) return res.status(400).json({ error: '不能封禁当前管理员账号' })
+    const values = block ? { generation_blocked_until: new Date(Date.now() + hours * 3600000).toISOString(), generation_block_reason: reason } : { generation_blocked_until: null, generation_block_reason: null }
+    const { data, error } = await supabaseAdmin().from('profiles').update(values).eq('id', req.params.id).select('generation_blocked_until,generation_block_reason').single()
+    if (error) throw error
+    res.json({ block: data })
   } catch (error) { next(error) }
 })
 
