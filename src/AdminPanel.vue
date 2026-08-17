@@ -1,33 +1,38 @@
 <template>
   <section class="admin-view">
     <div v-if="orderAlert" class="order-alert"><div><strong>🔔 {{ orderAlert }}</strong><span>请核对付款单号与截图后再确认到账</span></div><button @click="scrollToOrders">立即查看</button><button class="close" @click="orderAlert = ''">×</button></div>
-    <div class="admin-heading">
+    <aside class="admin-side-nav">
+      <div class="admin-side-title"><b>管理后台</b><span>ADMIN CONSOLE</span></div>
+      <button v-for="item in adminNavItems" :key="item.id" :class="{ active: adminActiveSection === item.id }" @click="adminActiveSection = item.id"><span>{{ item.icon }}</span><em>{{ item.name }}</em><i v-if="item.id === 'billing' && pendingOrderCount">{{ pendingOrderCount }}</i></button>
+    </aside>
+    <main class="admin-page-content">
+    <div v-show="adminActiveSection === 'users'" class="admin-heading">
       <div><h2>用户与算力管理</h2><p>查看用户余额、累计消耗和生成情况</p></div>
       <input v-model.trim="search" placeholder="搜索用户邮箱" @keyup.enter="loadUsers" />
       <button @click="loadUsers">搜索</button><button v-if="notificationPermission !== 'granted'" class="notification-enable" @click="enableNotifications">开启订单桌面提醒</button>
     </div>
     <p v-if="errorMessage" class="api-error">{{ errorMessage }}</p>
-    <section v-if="$data.adminAnnouncement" class="announcement-admin-card">
+    <section v-show="adminActiveSection === 'overview'" v-if="$data.adminAnnouncement" class="announcement-admin-card">
       <div class="admin-section-title"><div><h3>全站公告与维护通知</h3><p>发布后所有用户都会在页面顶部看到，可设置生效时间和自动结束时间</p></div><button :disabled="$data.announcementSaving" @click="saveAnnouncement">{{ $data.announcementSaving ? '保存中…' : '保存并发布' }}</button></div>
       <div class="announcement-form"><label class="announcement-toggle"><input v-model="$data.adminAnnouncement.active" type="checkbox" /> 启用全站公告</label><label>通知类型<select v-model="$data.adminAnnouncement.level"><option value="info">普通通知</option><option value="warning">重要提醒</option><option value="critical">故障 / 紧急</option><option value="success">活动 / 恢复</option></select></label><label class="announcement-title">标题<input v-model="$data.adminAnnouncement.title" maxlength="80" placeholder="例如：视频生成服务维护通知" /></label><label class="announcement-content">通知内容<textarea v-model="$data.adminAnnouncement.content" maxlength="500" placeholder="说明影响范围、预计恢复时间或用户需要采取的操作"></textarea></label><label>开始时间（可选）<input v-model="$data.adminAnnouncement.starts_at" type="datetime-local" /></label><label>结束时间（可选）<input v-model="$data.adminAnnouncement.ends_at" type="datetime-local" /></label></div>
     </section>
-    <section class="system-health-card" :class="systemHealth.status">
+    <section v-show="adminActiveSection === 'overview'" class="system-health-card" :class="systemHealth.status">
       <div class="health-main"><span class="health-dot"></span><div><h3>{{ healthStatusName }}</h3><p>最近检查：{{ formatDate(systemHealth.checkedAt) }} · 服务运行 {{ uptimeText }}</p></div><button @click="loadSystemHealth(false)">立即检查</button></div>
       <div class="health-metrics"><div><span>近 1 小时失败</span><b>{{ systemHealth.metrics.failedHour || 0 }}</b></div><div><span>生成中任务</span><b>{{ systemHealth.metrics.pending || 0 }}</b></div><div><span>超时任务</span><b>{{ systemHealth.metrics.stale || 0 }}</b></div><div><span>今日预算</span><b>{{ systemHealth.metrics.dayPercent || 0 }}%</b></div><div><span>本月预算</span><b>{{ systemHealth.metrics.monthPercent || 0 }}%</b></div></div>
       <div v-if="systemHealth.alerts.length" class="health-alert-list"><p v-for="item in systemHealth.alerts" :key="item.code" :class="item.level"><b>{{ item.level === 'critical' ? '严重' : '提醒' }}</b>{{ item.message }}</p></div>
       <div class="health-actions"><span>Supabase {{ providerStatus('supabase') }} · 图片 {{ providerStatus('image') }} · 文案 {{ providerStatus('text') }} · 视频 {{ providerStatus('video') }}</span><button v-if="systemHealth.metrics.stale" :disabled="healthCleaning" @click="cleanupStaleTasks">{{ healthCleaning ? '清理中…' : '清理超时任务并退款' }}</button></div>
     </section>
-    <div class="admin-stats">
+    <div v-show="adminActiveSection === 'overview'" class="admin-stats">
       <article><span>用户数量</span><b>{{ users.length }}</b></article>
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
-    <section class="feedback-admin-card">
+    <section v-show="adminActiveSection === 'overview'" class="feedback-admin-card">
       <div class="admin-section-title"><div><h3>生成质量反馈</h3><p>查看用户对文案、图片、GIF 和视频结果的真实评价</p></div><button @click="loadGenerationFeedback">刷新评价</button></div>
       <div class="feedback-admin-stats"><div><span>评价总数</span><b>{{ feedbackReport().stats.total || 0 }}</b></div><div><span>满意率</span><b>{{ feedbackReport().stats.satisfactionRate || 0 }}%</b></div><div><span>有帮助</span><b class="positive">{{ feedbackReport().stats.helpful || 0 }}</b></div><div><span>不满意</span><b class="negative">{{ feedbackReport().stats.unhelpful || 0 }}</b></div></div>
       <div class="feedback-admin-list"><article v-for="item in feedbackReport().feedback.filter(row => !row.helpful).slice(0,20)" :key="item.id"><div><b>{{ item.email || '未知用户' }}</b><span>{{ analyticsActionName(item.action) }} · {{ formatDate(item.created_at) }}</span></div><p>{{ item.reason || '用户未填写原因' }}</p><small>{{ item.prompt || '无提示词记录' }}</small></article><p v-if="!feedbackReport().feedback.some(row => !row.helpful)" class="feedback-empty">暂无不满意反馈</p></div>
     </section>
-    <section class="business-dashboard">
+    <section v-show="adminActiveSection === 'overview'" class="business-dashboard">
       <div class="admin-section-title"><div><h3>经营数据分析</h3><p>到账收入减已批准退款为净收入；预估毛利尚未包含服务器、支付手续费、税费和人工成本</p></div><div class="analytics-period"><button v-for="days in [7,30,90]" :key="days" :class="{ active: analyticsDays === days }" @click="changeAnalyticsDays(days)">{{ days }}天</button><button @click="loadAnalytics">刷新</button></div></div>
       <div v-if="analyticsLoading" class="analytics-loading">正在统计经营数据…</div>
       <template v-else>
@@ -36,7 +41,7 @@
         <p class="analytics-freshness">数据更新时间：{{ formatDate(analytics.freshness) }}。预估成本取后台配置值，不等同于供应商最终账单。</p>
       </template>
     </section>
-    <section class="cost-control-card" :class="{ danger: costBudgetDanger }">
+    <section v-show="adminActiveSection === 'cost'" class="cost-control-card" :class="{ danger: costBudgetDanger }">
       <div class="admin-section-title"><div><h3>API 成本监控与预算熔断</h3><p>金额为预估成本；达到每日或每月上限后，系统会在调用第三方接口前自动停止生成</p></div><button @click="loadCostControl">刷新成本</button></div>
       <div class="cost-stats">
         <div><span>今日预估成本</span><b>¥{{ money(costStats.dayUsedFen) }}</b><small>上限 ¥{{ money(costSettings.daily_limit_fen) }}</small><i><em :style="{ width: budgetPercent(costStats.dayUsedFen, costSettings.daily_limit_fen) + '%' }"></em></i></div>
@@ -59,26 +64,26 @@
       <button class="cost-save" :disabled="costSaving" @click="saveCostControl">{{ costSaving ? '保存中…' : '保存成本与熔断设置' }}</button>
       <p class="cost-note">建议先按供应商账单保守填写，并每周校准一次。预算填写 0 表示该周期不设上限。</p>
     </section>
-    <section class="lifecycle-card">
+    <section v-show="adminActiveSection === 'system'" class="lifecycle-card">
       <div class="admin-section-title"><div><h3>数据备份与生命周期</h3><p>先导出业务备份，再清理过期云端作品；订单、算力流水和协议记录不会自动删除</p></div><button @click="loadLifecycle">刷新预览</button></div>
       <div class="lifecycle-stats"><div><span>待清理作品文件</span><b>{{ lifecyclePreview.assetFiles || 0 }}</b><small>{{ lifecyclePreview.assetRecords || 0 }} 条生成记录涉及文件</small></div><div><span>待清理客服会话</span><b>{{ lifecyclePreview.closedSupport || 0 }}</b><small>仅已关闭且超过保留期</small></div><div><span>上次清理</span><b class="date">{{ formatDate(lifecycleSettings.last_cleanup_at) }}</b><small>建议清理前下载备份</small></div></div>
       <div class="lifecycle-settings"><label>云端作品保留天数<input v-model.number="lifecycleSettings.generated_asset_days" type="number" min="7" max="3650" /></label><label>已关闭客服记录保留天数<input v-model.number="lifecycleSettings.closed_support_days" type="number" min="30" max="3650" /></label><button :disabled="lifecycleSaving" @click="saveLifecycle">{{ lifecycleSaving ? '保存中…' : '保存保留策略' }}</button></div>
       <div class="lifecycle-actions"><button class="export" :disabled="lifecycleExporting" @click="exportBusinessData">{{ lifecycleExporting ? '正在导出…' : '下载业务数据备份（JSON）' }}</button><button class="cleanup" :disabled="lifecycleCleaning || !(lifecyclePreview.assetFiles || lifecyclePreview.closedSupport)" @click="cleanupExpiredData">{{ lifecycleCleaning ? '正在清理…' : '清理预览中的过期数据' }}</button></div>
       <p class="lifecycle-note">业务备份包含敏感用户和订单信息，请保存到加密磁盘，不要上传到公开网盘或发送给无关人员。备份文件记录作品链接，不包含图片、GIF和视频的实际文件内容。</p>
     </section>
-    <section class="content-safety-card">
+    <section v-show="adminActiveSection === 'risk'" class="content-safety-card">
       <div class="admin-section-title"><div><h3>内容审核与拦截记录</h3><p>在扣算力和调用第三方模型之前拦截明显高风险提示词；通用规则由系统维护</p></div><button @click="loadContentSafety">刷新记录</button></div>
       <div class="safety-settings"><label class="safety-switch"><input v-model="safetySettings.active" type="checkbox" /> 启用生成前内容审核</label><label>自定义禁用词（每行一个）<textarea v-model="safetyTermsText" maxlength="5000" placeholder="例如：需要额外禁止的品牌仿冒词或业务风险词"></textarea></label><button :disabled="safetySaving" @click="saveContentSafety">{{ safetySaving ? '保存中…' : '保存审核设置' }}</button></div>
       <div class="safety-table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>功能</th><th>风险类型</th><th>内容片段</th></tr></thead><tbody><tr v-for="item in moderationEvents" :key="item.id"><td>{{ formatDate(item.created_at) }}</td><td>{{ item.email }}</td><td>{{ analyticsActionName(item.source) }}</td><td><b>{{ item.category }}</b></td><td><p>{{ item.content_excerpt }}</p></td></tr><tr v-if="!moderationEvents.length"><td colspan="5">暂无内容拦截记录</td></tr></tbody></table></div>
       <p class="safety-note">当前审核重点覆盖明确的未成年人色情、伪造证件、诈骗盗取、露骨色情、极端暴力和危险违法活动。自动审核不能替代人工判断，上传图片本身暂未进行视觉识别。</p>
     </section>
-    <section class="referral-admin-card">
+    <section v-show="adminActiveSection === 'growth'" class="referral-admin-card">
       <div class="admin-section-title"><div><h3>邀请奖励与预算</h3><p>控制双方奖励、每月总预算和单个邀请人的奖励人数</p></div><button @click="loadReferrals">刷新记录</button></div>
       <div class="referral-admin-stats"><div><span>邀请总数</span><b>{{ referralStats.total || 0 }}</b></div><div><span>已发奖励</span><b>{{ referralStats.rewarded || 0 }}</b></div><div><span>本月已用预算</span><b>{{ referralStats.monthSpent || 0 }} 点</b></div><div><span>本月剩余预算</span><b>{{ Math.max(0, (referralSettings.monthly_budget || 0) - (referralStats.monthSpent || 0)) }} 点</b></div></div>
       <div class="referral-settings-form"><label><input v-model="referralSettings.active" type="checkbox" /> 启用邀请活动</label><label>邀请人奖励<input v-model.number="referralSettings.inviter_reward" type="number" min="0" step="1" /></label><label>新用户奖励<input v-model.number="referralSettings.invitee_reward" type="number" min="0" step="1" /></label><label>全站每月预算<input v-model.number="referralSettings.monthly_budget" type="number" min="0" step="1" /></label><label>每人每日奖励人数<input v-model.number="referralSettings.per_inviter_daily_limit" type="number" min="0" step="1" /></label><label>每人每月奖励人数<input v-model.number="referralSettings.per_inviter_monthly_limit" type="number" min="0" step="1" /></label><button :disabled="referralSaving" @click="saveReferralSettings">{{ referralSaving ? '保存中…' : '保存邀请设置' }}</button></div>
       <div class="referral-records"><div v-for="item in referrals" :key="item.id"><span><b>{{ item.inviter_email }}</b> 邀请 {{ item.invitee_email }}<small v-if="item.review_reason">{{ item.review_reason }}</small></span><em>{{ item.status }}</em><strong>{{ item.status === 'rewarded' ? `-${item.inviter_reward + item.invitee_reward} 点预算` : '未发放' }}</strong><small>{{ formatDate(item.created_at) }}</small></div><p v-if="!referrals.length">暂无邀请记录</p></div>
     </section>
-    <section class="support-admin-card">
+    <section v-show="adminActiveSection === 'support'" class="support-admin-card">
       <div class="admin-section-title"><div><h3>人工客服</h3><p>查看用户咨询并在站内回复</p></div><button @click="loadSupportConversations">刷新消息</button></div>
       <div class="support-admin-layout">
         <aside class="support-conversation-list">
@@ -95,7 +100,7 @@
         </div>
       </div>
     </section>
-    <section class="package-settings-card">
+    <section v-show="adminActiveSection === 'billing'" class="package-settings-card">
       <div class="admin-section-title"><div><h3>充值套餐设置</h3><p>修改后用户充值页面立即生效，无需重新部署</p></div><div class="section-actions"><button @click="addPackage">＋ 新增套餐</button><button class="secondary" @click="loadPackages">刷新</button></div></div>
       <div class="package-editor-grid">
         <article v-for="item in packages" :key="item.id" :class="{ inactive: !item.active }">
@@ -107,7 +112,7 @@
         </article>
       </div>
     </section>
-    <section class="payment-settings-card">
+    <section v-show="adminActiveSection === 'billing'" class="payment-settings-card">
       <div class="admin-section-title"><div><h3>微信收款码设置</h3><p>图片保存在云端，可随时上传新收款码替换</p></div></div>
       <div class="payment-settings-body">
         <div class="qr-preview"><img v-if="paymentSettings.qr_url" :src="paymentSettings.qr_url" alt="当前微信收款码" /><span v-else>暂未上传</span></div>
@@ -119,11 +124,11 @@
         </div>
       </div>
     </section>
-    <section class="audit-card">
+    <section v-show="adminActiveSection === 'system'" class="audit-card">
       <div class="admin-section-title"><div><h3>管理员操作审计</h3><p>记录充值、退款和人工调整算力等关键操作，日志不可由前端修改</p></div><button @click="loadAuditLogs">刷新日志</button></div>
       <div class="audit-table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>目标</th><th>详情</th><th>IP</th></tr></thead><tbody><tr v-for="item in auditLogs()" :key="item.id"><td>{{ formatDate(item.created_at) }}</td><td>{{ item.admin_email }}</td><td><b>{{ auditActionName(item.action) }}</b></td><td>{{ item.target_type }} · {{ item.target_id }}</td><td><code>{{ auditDetails(item.details) }}</code></td><td>{{ item.ip_address || '—' }}</td></tr><tr v-if="!auditLogs().length"><td colspan="6">暂无管理员操作记录</td></tr></tbody></table></div>
     </section>
-    <div ref="orderSection" class="admin-table-wrap recharge-admin" :class="{ 'has-pending': pendingOrderCount }">
+    <div v-show="adminActiveSection === 'billing'" ref="orderSection" class="admin-table-wrap recharge-admin" :class="{ 'has-pending': pendingOrderCount }">
       <div class="admin-section-title"><div><h3>充值订单 <em v-if="pendingOrderCount" class="pending-order-badge">{{ pendingOrderCount }} 条待审核</em></h3><p>确认收到款项后再批准，系统只会到账一次</p></div><button @click="loadOrders(false)">刷新订单</button></div>
       <table class="admin-table">
         <thead><tr><th>订单号 / 用户</th><th>套餐</th><th>金额</th><th>付款备注</th><th>提交时间</th><th>状态 / 操作</th></tr></thead>
@@ -136,14 +141,14 @@
         </tbody>
       </table>
     </div>
-    <div class="admin-table-wrap refund-admin">
+    <div v-show="adminActiveSection === 'billing'" class="admin-table-wrap refund-admin">
       <div class="admin-section-title"><div><h3>退款申请</h3><p>请先完成实际退款，再点击确认退款；系统随后扣回相应算力</p></div><button @click="loadRefunds">刷新退款</button></div>
       <table class="admin-table"><thead><tr><th>用户</th><th>退款金额</th><th>扣回算力</th><th>原因</th><th>申请时间</th><th>状态 / 操作</th></tr></thead><tbody>
         <tr v-for="item in refunds" :key="item.id"><td>{{ item.email }}</td><td>¥{{ (item.requested_amount_fen / 100).toFixed(2) }}</td><td>{{ item.requested_credits }} 点</td><td>{{ item.reason }}</td><td>{{ formatDate(item.created_at) }}</td><td><div v-if="item.status === 'pending'" class="order-actions"><button :disabled="busyId === item.id" @click="reviewRefund(item,true)">确认已退款</button><button class="reject" :disabled="busyId === item.id" @click="reviewRefund(item,false)">拒绝</button></div><strong v-else>{{ item.status === 'approved' ? '已退款' : '已拒绝' }}</strong></td></tr>
         <tr v-if="!refunds.length"><td colspan="6" class="admin-empty">暂无退款申请</td></tr>
       </tbody></table>
     </div>
-    <div class="admin-table-wrap">
+    <div v-show="adminActiveSection === 'users'" class="admin-table-wrap">
       <table class="admin-table">
         <thead><tr><th>用户</th><th>剩余算力</th><th>累计消耗</th><th>图片数</th><th>最近使用</th><th>调整算力</th><th>生成风控</th></tr></thead>
         <tbody>
@@ -162,6 +167,7 @@
         </tbody>
       </table>
     </div>
+    </main>
   </section>
 </template>
 
@@ -181,6 +187,7 @@ export default {
     analyticsMargin() { const revenue = Number(this.analytics.metrics.netRevenueFen || 0); return revenue ? Math.round(Number(this.analytics.metrics.estimatedGrossProfitFen || 0) / revenue * 100) : 0 }
   },
   mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAuditLogs(); this.loadGenerationFeedback(); this.loadAnnouncement(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadContentSafety(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
+  created() { this.$set(this.$data, 'adminActiveSection', 'overview'); this.$set(this.$data, 'adminNavItems', [{ id: 'overview', icon: '⌂', name: '数据概览' }, { id: 'users', icon: '♙', name: '用户管理' }, { id: 'billing', icon: '¥', name: '充值与套餐' }, { id: 'growth', icon: '↗', name: '邀请增长' }, { id: 'support', icon: '☏', name: '人工客服' }, { id: 'cost', icon: '◫', name: '成本控制' }, { id: 'risk', icon: '!', name: '内容风控' }, { id: 'system', icon: '⚙', name: '系统与审计' }]) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
@@ -322,7 +329,7 @@ export default {
       if (this.notificationPermission === 'granted') { const first = orders[0]; new Notification('灵境 AI：收到新充值订单', { body: `${first.email || '用户'} 提交 ¥${(first.amount_fen / 100).toFixed(2)} 充值${orders.length > 1 ? `，另有 ${orders.length - 1} 笔` : ''}`, tag: 'lingjing-recharge-order', requireInteraction: true }); }
     },
     async enableNotifications() { if (typeof Notification === 'undefined') return; this.notificationPermission = await Notification.requestPermission(); if (this.notificationPermission === 'granted') new Notification('订单提醒已开启', { body: '有新充值订单时会在桌面通知你。' }); },
-    scrollToOrders() { this.$refs.orderSection?.scrollIntoView({ behavior: 'smooth', block: 'start' }); this.orderAlert = ''; },
+    scrollToOrders() { this.adminActiveSection = 'billing'; this.$nextTick(() => this.$refs.orderSection?.scrollIntoView({ behavior: 'smooth', block: 'start' })); this.orderAlert = ''; },
     async loadRefunds() {
       try { const response = await fetch('/api/admin/refunds', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取退款申请失败'); this.refunds = data.refunds || [] }
       catch (error) { this.errorMessage = error.message }
