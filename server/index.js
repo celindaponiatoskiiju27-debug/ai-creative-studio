@@ -26,6 +26,8 @@ app.use(express.json({ limit: '1mb' }))
 
 const CREDIT_PRICES = Object.freeze({ copy: 1, enhance: 1, image: 2, imageEdit: 3, gif: 6, video: 25 })
 const LEGAL_VERSION = '2026-08-17'
+const AI_LABEL = 'AI生成内容'
+const AI_LABEL_VERSION = '2026-08-17'
 const CREDIT_PACKAGES = Object.freeze([
   { id: 'trial', name: '首充体验', priceFen: 190, credits: 10, firstPurchaseOnly: true },
   { id: 'starter', name: '入门套餐', priceFen: 990, credits: 60 },
@@ -127,7 +129,10 @@ async function reserveGeneration(userId, body, requestedCredits, outputCount) {
     throw error
   }
   if (body.action && data) {
-    const { error: actionError } = await supabaseAdmin().from('usage_records').update({ action: String(body.action).slice(0, 50) }).eq('id', data)
+    const { error: actionError } = await supabaseAdmin().from('usage_records').update({
+      action: String(body.action).slice(0, 50), ai_generated: true,
+      ai_label: AI_LABEL, ai_label_version: AI_LABEL_VERSION
+    }).eq('id', data)
     if (actionError) throw actionError
   }
   if (credits > 0 && data) {
@@ -323,7 +328,10 @@ async function archiveOutputs(userId, usageId, urls) {
     const extension = extensions[contentType]
     if (!extension) throw new Error(`不支持归档的文件格式：${contentType || 'unknown'}`)
     const objectPath = `${userId}/${usageId}/${index + 1}.${extension}`
-    const { error } = await supabaseAdmin().storage.from('generated-assets').upload(objectPath, buffer, { contentType, upsert: true, cacheControl: '31536000' })
+    const { error } = await supabaseAdmin().storage.from('generated-assets').upload(objectPath, buffer, {
+      contentType, upsert: true, cacheControl: '31536000',
+      metadata: { ai_generated: 'true', ai_label: AI_LABEL, ai_label_version: AI_LABEL_VERSION }
+    })
     if (error) throw error
     archived.push(supabaseAdmin().storage.from('generated-assets').getPublicUrl(objectPath).data.publicUrl)
   }
@@ -432,7 +440,7 @@ app.get('/api/me', requireUser, async (req, res, next) => {
 
 app.get('/api/usage', requireUser, async (req, res, next) => {
   try {
-    const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,prompt,output_urls,output_text,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
+    const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,prompt,output_urls,output_text,ai_generated,ai_label,ai_label_version,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
     if (error) throw error
     res.json({ records: data })
   } catch (error) { next(error) }
@@ -890,7 +898,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (saveCopyError) console.error('[archive-copy]', usageId, saveCopyError.message)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits })
+    res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
     next(error)
@@ -963,7 +971,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits })
+    res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
     next(error)
@@ -986,7 +994,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits })
+    res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
     next(error)
@@ -1007,7 +1015,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     const payload = mode === 'image' ? { gifs: storedOutputs } : { videos: storedOutputs }
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ ...payload, credits: profile.credits })
+    res.json({ ...payload, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
     next(error)

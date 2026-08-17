@@ -70,7 +70,7 @@
           <div class="copy-result-header"><div><h2>生成结果</h2><span>由 GPT-5.4 生成</span></div><div class="copy-header-actions"><button v-if="copyResult" class="history-btn" @click="copyCopyResult">{{ copyCopied ? '已复制' : '复制文案' }}</button><button class="history-btn" @click="openHistory(true)">◷ 文案历史</button></div></div>
           <div v-if="copyLoading" class="loading-state"><div class="loader"><i /><i /><i /></div><h3>正在分析商品卖点</h3><p>AI 正在为目标平台组织高转化文案…</p></div>
           <div v-else-if="!copyResult" class="copy-empty"><div class="placeholder-icon">文</div><h3>让好商品更会表达</h3><p>填写左侧商品资料，生成标题、卖点和营销正文</p></div>
-          <pre v-else class="copy-output">{{ copyResult }}</pre>
+          <div v-else class="copy-output-wrap"><span class="ai-content-label">AI 生成内容</span><pre class="copy-output">{{ copyResult }}</pre></div>
         </div>
       </section>
       <section v-if="page === 'image' || page === 'video'" class="creator-view">
@@ -226,6 +226,7 @@
               class="result-card"
               :class="resultClass"
             >
+              <span class="ai-content-label media-label">AI 生成</span>
               <video v-if="resultType === 'video'" :src="image" autoplay loop muted playsinline controls />
               <img v-else :src="image" :alt="`AI 生成作品 ${i + 1}`" />
               <div class="result-actions">
@@ -280,6 +281,7 @@
         <div v-else-if="displayedAssetItems.length" class="asset-grid">
           <article v-for="(item, index) in displayedAssetItems" :key="item.id || item.url">
             <div class="asset-preview">
+              <span class="ai-content-label media-label">AI 生成</span>
               <video v-if="item.type === 'video'" :src="item.url" controls preload="metadata" />
               <img v-else-if="item.type !== 'text'" :src="item.url" :alt="item.prompt || 'AI 作品'" loading="lazy" />
               <pre v-else>{{ item.text }}</pre>
@@ -344,12 +346,13 @@
             <strong>-{{ record.credits }} 点</strong>
             <div v-if="record.output_urls && record.output_urls.length" class="history-assets">
               <div v-for="(asset, index) in record.output_urls" :key="asset" class="history-asset">
+                <span class="ai-content-label media-label">{{ record.ai_label || 'AI 生成' }}</span>
                 <video v-if="record.action === 'video_generation'" :src="asset" controls preload="metadata" />
                 <img v-else :src="asset" :alt="`${historyName(record.action)}作品 ${index + 1}`" loading="lazy" />
                 <button @click="downloadHistory(asset, record, index)">↓ 下载</button>
               </div>
             </div>
-            <div v-else-if="record.output_text" class="history-copy-output"><pre>{{ record.output_text }}</pre><button @click="copyHistoryText(record)">{{ copiedHistoryId === record.id ? '已复制' : '复制文案' }}</button></div>
+            <div v-else-if="record.output_text" class="history-copy-output"><span class="ai-content-label">{{ record.ai_label || 'AI 生成内容' }}</span><pre>{{ record.output_text }}</pre><button @click="copyHistoryText(record)">{{ copiedHistoryId === record.id ? '已复制' : '复制文案' }}</button></div>
             <p v-else-if="record.status === 'completed'" class="history-no-asset">{{ record.action === 'copy_generation' ? '该文案生成于正文保存功能上线之前，暂无正文备份。' : '该记录生成于作品云端保存功能上线之前，暂无文件备份。' }}</p>
           </article>
         </div>
@@ -717,11 +720,11 @@ export default {
     formatHistoryDate(value) { return value ? new Date(value).toLocaleString('zh-CN') : ''; },
     downloadHistory(url, record, index) {
       const link = document.createElement('a'); link.href = url;
-      link.download = `lingjing-${record.action}-${new Date(record.created_at).getTime()}-${index + 1}`;
+      link.download = `AI生成内容-lingjing-${record.action}-${new Date(record.created_at).getTime()}-${index + 1}`;
       link.target = '_blank'; link.click();
     },
     async copyHistoryText(record) {
-      await navigator.clipboard.writeText(record.output_text || ''); this.copiedHistoryId = record.id;
+      await navigator.clipboard.writeText(`【${record.ai_label || 'AI生成内容'}】\n${record.output_text || ''}`); this.copiedHistoryId = record.id;
       setTimeout(() => { if (this.copiedHistoryId === record.id) this.copiedHistoryId = ''; }, 1500);
     },
     async openSupport() {
@@ -773,7 +776,7 @@ export default {
       finally { this.copyLoading = false; }
     },
     async copyCopyResult() {
-      await navigator.clipboard.writeText(this.copyResult);
+      await navigator.clipboard.writeText(`【AI生成内容】\n${this.copyResult}`);
       this.copyCopied = true;
       setTimeout(() => { this.copyCopied = false; }, 1500);
     },
@@ -999,13 +1002,13 @@ export default {
     },
     downloadAsset(item, index) {
       const link = document.createElement('a'); link.href = item.url; link.target = '_blank';
-      link.download = `lingjing-${item.type}-${Date.now()}-${index + 1}.${item.type === 'video' ? 'mp4' : (item.type === 'gif' ? 'gif' : 'png')}`; link.click();
+      link.download = `AI生成内容-lingjing-${item.type}-${Date.now()}-${index + 1}.${item.type === 'video' ? 'mp4' : (item.type === 'gif' ? 'gif' : 'png')}`; link.click();
     },
     download(image, index) {
       const link = document.createElement("a");
       link.href = image;
       const extension = this.resultType === 'video' ? 'mp4' : (this.resultType === 'gif' ? 'gif' : 'png');
-      link.download = `lingjing-ai-${Date.now()}-${index + 1}.${extension}`;
+      link.download = `AI生成内容-lingjing-${Date.now()}-${index + 1}.${extension}`;
       link.click();
     },
     async generate() {
@@ -1087,6 +1090,7 @@ export default {
 .copy-header-actions{display:flex;gap:7px;align-items:center}
 .copy-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }.copy-empty h3 { margin: 20px 0 8px; }.copy-empty p { color: #989ba4; font-size: 12px; }
 .copy-output { flex: 1; margin: 15px 0 0; padding: 22px; border: 1px solid #eeebfa; border-radius: 14px; overflow: auto; background: #faf9ff; color: #292735; white-space: pre-wrap; word-break: break-word; font: 13px/1.9 "PingFang SC","Microsoft YaHei",sans-serif; }
+.copy-output-wrap{position:relative;flex:1;min-height:0}.copy-output-wrap .copy-output{height:calc(100% - 15px);padding-top:46px}.ai-content-label{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;background:#f0ecff;color:#6847e8;font-size:10px;font-weight:700;line-height:1.2}.copy-output-wrap>.ai-content-label{position:absolute;z-index:2;left:14px;top:29px}.media-label{position:absolute;z-index:3;left:8px;top:8px;background:#171820c9;color:#fff;backdrop-filter:blur(5px)}
 .recharge-overlay{position:fixed;inset:0;z-index:100;background:#11131a99;display:grid;place-items:center;padding:20px}.recharge-modal{width:min(820px,100%);max-height:92vh;overflow:auto;padding:25px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.recharge-modal>header{display:flex;justify-content:space-between;align-items:flex-start}.recharge-modal h2{margin:0 0 6px}.recharge-modal header p{margin:0;color:#858993;font-size:12px}.recharge-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.package-grid{margin:22px 0;display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.package-grid button{position:relative;min-height:142px;padding:17px 8px 12px;border:1px solid #e9eaf0;border-radius:13px;background:#fff;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer}.package-grid button.selected{border:2px solid #7657ff;background:#f8f6ff}.package-grid button>em{position:absolute;top:-9px;padding:3px 9px;border-radius:10px;background:#7657ff;color:#fff;font-size:9px;font-style:normal}.package-grid strong{font-size:22px}.package-grid span{color:#7657ff;font-size:12px}.package-grid small{color:#999;font-size:9px}.payment-box{padding:20px;border-radius:13px;background:#f7f7fa;display:flex;gap:24px;align-items:center}.payment-qr-link{flex:0 0 240px;display:flex;flex-direction:column;align-items:center;gap:7px;color:#7657ff;text-decoration:none;font-size:11px}.payment-qr-link img{width:240px;height:240px;padding:6px;object-fit:contain;background:#fff;border-radius:10px;box-shadow:0 4px 16px #2221}.payment-qr-link small{font-size:10px}.payment-box>div{flex:1}.payment-box p{margin:7px 0;color:#777b85;font-size:11px}.payment-box input{width:100%;height:38px;padding:0 11px;border:1px solid #dddfe6;border-radius:9px;background:#fff}.recharge-success{color:#17894c;font-size:12px}.order-list{margin-top:20px}.order-list h3{font-size:13px}.order-list>div{padding:9px 0;border-top:1px solid #eee;display:grid;grid-template-columns:1fr auto 60px;gap:10px;font-size:10px}.order-list em{text-align:right;font-style:normal}.order-list em.paid{color:#17894c}.order-list em.pending{color:#d38316}.order-list em.rejected{color:#d33}@media(max-width:700px){.package-grid{grid-template-columns:repeat(2,1fr)}.payment-box{align-items:stretch;flex-direction:column}.payment-qr-link{flex-basis:auto;align-self:center}.payment-qr-link img{width:min(280px,75vw);height:min(280px,75vw)}.order-list>div{grid-template-columns:1fr}.order-list em{text-align:left}}
 .history-modal{width:min(820px,100%);max-height:90vh;overflow:auto;padding:24px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.history-modal>header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:16px;border-bottom:1px solid #eee}.history-modal h2{margin:0 0 6px}.history-modal header p{margin:0;color:#858993;font-size:12px}.history-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.history-list article{padding:15px 0;border-bottom:1px solid #f0f1f4;display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center}.history-icon{width:42px;height:42px;border-radius:11px;background:#f0ecff;color:#7657ff;display:grid;place-items:center;font-weight:700}.history-info{min-width:0}.history-info>div{display:flex;align-items:center;gap:8px}.history-info em{padding:2px 7px;border-radius:8px;background:#fff3dc;color:#b36b00;font-size:9px;font-style:normal}.history-info em.completed{background:#eaf8ef;color:#17894c}.history-info em.failed{background:#fff0f0;color:#c44}.history-info p{margin:6px 0;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}.history-info small{color:#999;font-size:9px}.history-list article>strong{color:#7657ff;font-size:12px}.history-assets{grid-column:2/-1;display:grid;grid-template-columns:repeat(4,minmax(90px,1fr));gap:8px}.history-asset{position:relative;aspect-ratio:1;overflow:hidden;border-radius:10px;background:#17181d}.history-asset img,.history-asset video{width:100%;height:100%;object-fit:cover}.history-asset button{position:absolute;right:6px;bottom:6px;height:27px;padding:0 9px;border:0;border-radius:7px;background:#15161dcc;color:#fff;font-size:9px;cursor:pointer}.history-no-asset{grid-column:2/-1;margin:0;padding:10px;border-radius:8px;background:#f7f7f9;color:#999;font-size:10px}.history-loading,.history-empty{padding:70px 20px;text-align:center;color:#999;font-size:12px}@media(max-width:560px){.history-list article{grid-template-columns:36px 1fr}.history-icon{width:36px;height:36px}.history-list article>strong{grid-column:2}.history-assets{grid-column:1/-1;grid-template-columns:repeat(2,1fr)}.history-no-asset{grid-column:1/-1}}
 .history-copy-output{grid-column:2/-1;position:relative;padding:14px;border-radius:10px;background:#faf9ff;border:1px solid #eeebfa}.history-copy-output pre{max-height:240px;margin:0;padding-right:80px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.75 "PingFang SC","Microsoft YaHei",sans-serif}.history-copy-output button{position:absolute;right:10px;top:10px;height:28px;padding:0 10px;border:0;border-radius:7px;background:#7657ff;color:#fff;font-size:9px;cursor:pointer}@media(max-width:560px){.history-copy-output{grid-column:1/-1}.history-copy-output pre{padding-right:0;padding-top:35px}}
