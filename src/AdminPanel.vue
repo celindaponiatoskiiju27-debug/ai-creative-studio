@@ -1,9 +1,10 @@
 <template>
   <section class="admin-view">
+    <div v-if="orderAlert" class="order-alert"><div><strong>🔔 {{ orderAlert }}</strong><span>请核对付款单号与截图后再确认到账</span></div><button @click="scrollToOrders">立即查看</button><button class="close" @click="orderAlert = ''">×</button></div>
     <div class="admin-heading">
       <div><h2>用户与算力管理</h2><p>查看用户余额、累计消耗和生成情况</p></div>
       <input v-model.trim="search" placeholder="搜索用户邮箱" @keyup.enter="loadUsers" />
-      <button @click="loadUsers">搜索</button>
+      <button @click="loadUsers">搜索</button><button v-if="notificationPermission !== 'granted'" class="notification-enable" @click="enableNotifications">开启订单桌面提醒</button>
     </div>
     <p v-if="errorMessage" class="api-error">{{ errorMessage }}</p>
     <div class="admin-stats">
@@ -58,8 +59,8 @@
         </div>
       </div>
     </section>
-    <div class="admin-table-wrap recharge-admin">
-      <div class="admin-section-title"><div><h3>充值订单</h3><p>确认收到款项后再批准，系统只会到账一次</p></div><button @click="loadOrders">刷新订单</button></div>
+    <div ref="orderSection" class="admin-table-wrap recharge-admin" :class="{ 'has-pending': pendingOrderCount }">
+      <div class="admin-section-title"><div><h3>充值订单 <em v-if="pendingOrderCount" class="pending-order-badge">{{ pendingOrderCount }} 条待审核</em></h3><p>确认收到款项后再批准，系统只会到账一次</p></div><button @click="loadOrders(false)">刷新订单</button></div>
       <table class="admin-table">
         <thead><tr><th>订单号 / 用户</th><th>套餐</th><th>金额</th><th>付款备注</th><th>提交时间</th><th>状态 / 操作</th></tr></thead>
         <tbody>
@@ -103,13 +104,15 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
-    selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) }
+    selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) },
+    pendingOrderCount() { return this.orders.filter(item => item.status === 'pending').length }
   },
-  mounted() { this.loadUsers(); this.loadOrders(); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals() },
+  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000) },
+  beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
     async loadReferrals() {
@@ -132,14 +135,24 @@ export default {
       } catch (error) { this.errorMessage = error.message }
       finally { this.loading = false }
     },
-    async loadOrders() {
+    async loadOrders(notifyNew = false) {
       try {
         const response = await fetch('/api/admin/recharge-orders', { headers: this.headers() })
         const data = await response.json()
         if (!response.ok) throw new Error(data.error || '读取充值订单失败')
-        this.orders = data.orders || []
+        const orders = data.orders || []; const pendingIds = orders.filter(item => item.status === 'pending').map(item => item.id); const newOrders = notifyNew ? orders.filter(item => item.status === 'pending' && !this.knownPendingOrderIds.includes(item.id)) : [];
+        this.orders = orders; this.knownPendingOrderIds = pendingIds; document.title = pendingIds.length ? `(${pendingIds.length}条待审核) ${this.originalTitle}` : this.originalTitle;
+        if (newOrders.length) this.notifyNewOrders(newOrders)
       } catch (error) { this.errorMessage = error.message }
     },
+    notifyNewOrders(orders) {
+      this.orderAlert = `收到 ${orders.length} 笔新充值订单！`;
+      try { const AudioCtx = window.AudioContext || window.webkitAudioContext; const ctx = new AudioCtx(); const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.connect(gain); gain.connect(ctx.destination); oscillator.frequency.setValueAtTime(880, ctx.currentTime); oscillator.frequency.setValueAtTime(1175, ctx.currentTime + 0.18); gain.gain.setValueAtTime(0.18, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5); oscillator.start(); oscillator.stop(ctx.currentTime + 0.5); }
+      catch (_error) {}
+      if (this.notificationPermission === 'granted') { const first = orders[0]; new Notification('灵境 AI：收到新充值订单', { body: `${first.email || '用户'} 提交 ¥${(first.amount_fen / 100).toFixed(2)} 充值${orders.length > 1 ? `，另有 ${orders.length - 1} 笔` : ''}`, tag: 'lingjing-recharge-order', requireInteraction: true }); }
+    },
+    async enableNotifications() { if (typeof Notification === 'undefined') return; this.notificationPermission = await Notification.requestPermission(); if (this.notificationPermission === 'granted') new Notification('订单提醒已开启', { body: '有新充值订单时会在桌面通知你。' }); },
+    scrollToOrders() { this.$refs.orderSection?.scrollIntoView({ behavior: 'smooth', block: 'start' }); this.orderAlert = ''; },
     async loadRefunds() {
       try { const response = await fetch('/api/admin/refunds', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取退款申请失败'); this.refunds = data.refunds || [] }
       catch (error) { this.errorMessage = error.message }
@@ -264,7 +277,7 @@ export default {
         const data = await response.json()
         if (!response.ok) throw new Error(data.error || '审核订单失败')
         order.status = data.status
-        await this.loadUsers()
+        await Promise.all([this.loadUsers(), this.loadOrders(false)])
       } catch (error) { this.errorMessage = error.message }
       finally { this.busyId = '' }
     },
