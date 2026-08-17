@@ -121,16 +121,21 @@ async function requireAdmin(req, _res, next) {
 
 async function reserveGeneration(userId, body, requestedCredits, outputCount) {
   const credits = requestedCredits ?? Math.min(4, Math.max(1, Number(body.count) || 1))
-  const { data, error } = await supabaseAdmin().rpc('reserve_generation', {
-    p_user_id: userId, p_credits: credits, p_count: outputCount ?? credits, p_prompt: body.prompt
+  const action = String(body.action || 'image_generation').slice(0, 50)
+  const { data, error } = await supabaseAdmin().rpc('reserve_generation_budgeted', {
+    p_user_id: userId, p_credits: credits, p_count: outputCount ?? credits, p_prompt: body.prompt, p_action: action
   })
   if (error) {
     if (error.message?.includes('INSUFFICIENT_CREDITS')) { error.status = 402; error.message = '算力不足' }
+    else if (error.message?.includes('DAILY_BUDGET_REACHED')) { error.status = 503; error.message = '今日生成额度已用完，请明天再试' }
+    else if (error.message?.includes('MONTHLY_BUDGET_REACHED')) { error.status = 503; error.message = '本月生成额度已用完，请联系管理员' }
+    else if (error.message?.includes('GENERATION_PAUSED')) { error.status = 503; error.message = '生成服务正在维护，请稍后再试' }
+    else if (error.message?.includes('ACTION_DISABLED')) { error.status = 503; error.message = '该生成功能暂时关闭，请稍后再试' }
     throw error
   }
   if (body.action && data) {
     const { error: actionError } = await supabaseAdmin().from('usage_records').update({
-      action: String(body.action).slice(0, 50), ai_generated: true,
+      action, ai_generated: true,
       ai_label: AI_LABEL, ai_label_version: AI_LABEL_VERSION
     }).eq('id', data)
     if (actionError) throw actionError
@@ -477,6 +482,42 @@ app.get('/api/admin/usage', requireUser, requireAdmin, async (req, res, next) =>
     const { data, error } = await query
     if (error) throw error
     res.json({ records: data })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/cost-control', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const now = new Date()
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now).filter(item => item.type !== 'literal').map(item => [item.type, item.value]))
+    const dayStart = new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00+08:00`).toISOString()
+    const monthStart = new Date(`${parts.year}-${parts.month}-01T00:00:00+08:00`).toISOString()
+    const [{ data: settings, error: settingsError }, { data: usage, error: usageError }] = await Promise.all([
+      supabaseAdmin().from('cost_control_settings').select('*').eq('id', true).single(),
+      supabaseAdmin().from('usage_records').select('action,estimated_cost_fen,status,created_at').in('status', ['pending', 'completed']).gte('created_at', monthStart)
+    ])
+    if (settingsError) throw settingsError
+    if (usageError) throw usageError
+    const monthUsedFen = (usage || []).reduce((sum, item) => sum + Number(item.estimated_cost_fen || 0), 0)
+    const dayUsedFen = (usage || []).filter(item => item.created_at >= dayStart).reduce((sum, item) => sum + Number(item.estimated_cost_fen || 0), 0)
+    const byAction = (usage || []).reduce((result, item) => { result[item.action] = (result[item.action] || 0) + Number(item.estimated_cost_fen || 0); return result }, {})
+    res.json({ settings, stats: { dayUsedFen, monthUsedFen, byAction } })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/cost-control', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const allowedActions = ['copy_generation', 'prompt_enhance', 'image_generation', 'image_edit', 'gif_generation', 'video_generation']
+    const dailyLimitFen = Number(req.body.daily_limit_fen)
+    const monthlyLimitFen = Number(req.body.monthly_limit_fen)
+    const actionCosts = Object.fromEntries(allowedActions.map(action => [action, Number(req.body.action_costs?.[action])]))
+    const disabledActions = [...new Set(Array.isArray(req.body.disabled_actions) ? req.body.disabled_actions.filter(action => allowedActions.includes(action)) : [])]
+    if (![dailyLimitFen, monthlyLimitFen, ...Object.values(actionCosts)].every(value => Number.isInteger(value) && value >= 0 && value <= 100000000)) return res.status(400).json({ error: '预算和预估成本必须是非负整数（单位：分）' })
+    const { data, error } = await supabaseAdmin().from('cost_control_settings').update({
+      active: req.body.active === true, daily_limit_fen: dailyLimitFen, monthly_limit_fen: monthlyLimitFen,
+      action_costs: actionCosts, disabled_actions: disabledActions, updated_by: req.user.id, updated_at: new Date().toISOString()
+    }).eq('id', true).select('*').single()
+    if (error) throw error
+    res.json({ settings: data })
   } catch (error) { next(error) }
 })
 

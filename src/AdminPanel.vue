@@ -12,6 +12,22 @@
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
+    <section class="cost-control-card" :class="{ danger: costBudgetDanger }">
+      <div class="admin-section-title"><div><h3>API 成本监控与预算熔断</h3><p>金额为预估成本；达到每日或每月上限后，系统会在调用第三方接口前自动停止生成</p></div><button @click="loadCostControl">刷新成本</button></div>
+      <div class="cost-stats">
+        <div><span>今日预估成本</span><b>¥{{ money(costStats.dayUsedFen) }}</b><small>上限 ¥{{ money(costSettings.daily_limit_fen) }}</small><i><em :style="{ width: budgetPercent(costStats.dayUsedFen, costSettings.daily_limit_fen) + '%' }"></em></i></div>
+        <div><span>本月预估成本</span><b>¥{{ money(costStats.monthUsedFen) }}</b><small>上限 ¥{{ money(costSettings.monthly_limit_fen) }}</small><i><em :style="{ width: budgetPercent(costStats.monthUsedFen, costSettings.monthly_limit_fen) + '%' }"></em></i></div>
+        <div><span>生成总开关</span><b :class="costSettings.active ? 'enabled' : 'disabled'">{{ costSettings.active ? '运行中' : '已熔断' }}</b><small>紧急情况下可手动关闭所有生成</small></div>
+      </div>
+      <div class="cost-settings-form">
+        <label class="master-switch"><input v-model="costSettings.active" type="checkbox" /> 启用全站 AI 生成</label>
+        <label>每日预算（元）<input v-model.number="costDailyYuan" type="number" min="0" step="1" /></label>
+        <label>每月预算（元）<input v-model.number="costMonthlyYuan" type="number" min="0" step="1" /></label>
+      </div>
+      <div class="action-cost-grid"><article v-for="item in costActions" :key="item.id" :class="{ disabled: isCostActionDisabled(item.id) }"><div><b>{{ item.name }}</b><label><input :checked="!isCostActionDisabled(item.id)" type="checkbox" @change="toggleCostAction(item.id, $event.target.checked)" /> 允许调用</label></div><label>单次预估成本（元）<input v-model.number="costActionYuan[item.id]" type="number" min="0" step="0.01" /></label><small>本月累计 ¥{{ money(costStats.byAction && costStats.byAction[item.id]) }}</small></article></div>
+      <button class="cost-save" :disabled="costSaving" @click="saveCostControl">{{ costSaving ? '保存中…' : '保存成本与熔断设置' }}</button>
+      <p class="cost-note">建议先按供应商账单保守填写，并每周校准一次。预算填写 0 表示该周期不设上限。</p>
+    </section>
     <section class="referral-admin-card">
       <div class="admin-section-title"><div><h3>邀请奖励与预算</h3><p>控制双方奖励、每月总预算和单个邀请人的奖励人数</p></div><button @click="loadReferrals">刷新记录</button></div>
       <div class="referral-admin-stats"><div><span>邀请总数</span><b>{{ referralStats.total || 0 }}</b></div><div><span>已发奖励</span><b>{{ referralStats.rewarded || 0 }}</b></div><div><span>本月已用预算</span><b>{{ referralStats.monthSpent || 0 }} 点</b></div><div><span>本月剩余预算</span><b>{{ Math.max(0, (referralSettings.monthly_budget || 0) - (referralStats.monthSpent || 0)) }} 点</b></div></div>
@@ -104,17 +120,33 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
     selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) },
-    pendingOrderCount() { return this.orders.filter(item => item.status === 'pending').length }
+    pendingOrderCount() { return this.orders.filter(item => item.status === 'pending').length },
+    costBudgetDanger() { return this.budgetPercent(this.costStats.dayUsedFen, this.costSettings.daily_limit_fen) >= 80 || this.budgetPercent(this.costStats.monthUsedFen, this.costSettings.monthly_limit_fen) >= 80 }
   },
-  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000) },
+  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadCostControl(); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
+    money(fen) { return (Number(fen || 0) / 100).toFixed(2) },
+    budgetPercent(used, limit) { return Number(limit) > 0 ? Math.min(100, Math.round(Number(used || 0) / Number(limit) * 100)) : 0 },
+    isCostActionDisabled(action) { return (this.costSettings.disabled_actions || []).includes(action) },
+    toggleCostAction(action, enabled) { const current = new Set(this.costSettings.disabled_actions || []); enabled ? current.delete(action) : current.add(action); this.costSettings.disabled_actions = [...current] },
+    async loadCostControl() {
+      try { const response = await fetch('/api/admin/cost-control', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取成本设置失败'); this.costSettings = data.settings; this.costStats = data.stats; this.costDailyYuan = Number(data.settings.daily_limit_fen || 0) / 100; this.costMonthlyYuan = Number(data.settings.monthly_limit_fen || 0) / 100; this.costActionYuan = Object.fromEntries(this.costActions.map(item => [item.id, Number(data.settings.action_costs?.[item.id] || 0) / 100])); }
+      catch (error) { this.errorMessage = error.message }
+    },
+    async saveCostControl() {
+      const values = [this.costDailyYuan, this.costMonthlyYuan, ...Object.values(this.costActionYuan)]; if (!values.every(value => Number.isFinite(Number(value)) && Number(value) >= 0)) { this.errorMessage = '预算和成本不能为负数'; return }
+      this.costSaving = true; this.errorMessage = ''
+      try { const body = { ...this.costSettings, daily_limit_fen: Math.round(Number(this.costDailyYuan) * 100), monthly_limit_fen: Math.round(Number(this.costMonthlyYuan) * 100), action_costs: Object.fromEntries(this.costActions.map(item => [item.id, Math.round(Number(this.costActionYuan[item.id] || 0) * 100)])) }; const response = await fetch('/api/admin/cost-control', { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存成本设置失败'); this.costSettings = data.settings; await this.loadCostControl(); }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.costSaving = false }
+    },
     async loadReferrals() {
       try { const response = await fetch('/api/admin/referrals', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取邀请记录失败'); this.referrals = data.referrals || []; this.referralSettings = data.settings || {}; this.referralStats = data.stats || {}; }
       catch (error) { this.errorMessage = error.message }
