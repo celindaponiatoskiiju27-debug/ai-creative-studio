@@ -491,6 +491,47 @@ app.get('/api/admin/usage', requireUser, requireAdmin, async (req, res, next) =>
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/business-analytics', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const days = [7, 30, 90].includes(Number(req.query.days)) ? Number(req.query.days) : 30
+    const since = new Date(Date.now() - (days - 1) * 86400000); since.setUTCHours(0, 0, 0, 0)
+    const sinceIso = since.toISOString()
+    const paidStatuses = ['paid', 'partially_refunded', 'refunded']
+    const [{ data: profiles, error: profileError }, { data: orders, error: orderError }, { data: refunds, error: refundError }, { data: usage, error: usageError }] = await Promise.all([
+      supabaseAdmin().from('profiles').select('id,created_at').limit(10000),
+      supabaseAdmin().from('recharge_orders').select('id,user_id,amount_fen,status,created_at,paid_at').in('status', paidStatuses).limit(10000),
+      supabaseAdmin().from('refund_requests').select('id,user_id,requested_amount_fen,status,reviewed_at,created_at').eq('status', 'approved').limit(10000),
+      supabaseAdmin().from('usage_records').select('action,status,credits,estimated_cost_fen,created_at').gte('created_at', sinceIso).limit(10000)
+    ])
+    if (profileError) throw profileError; if (orderError) throw orderError; if (refundError) throw refundError; if (usageError) throw usageError
+    const periodOrders = (orders || []).filter(item => item.paid_at && item.paid_at >= sinceIso)
+    const periodRefunds = (refunds || []).filter(item => (item.reviewed_at || item.created_at) >= sinceIso)
+    const periodProfiles = (profiles || []).filter(item => item.created_at >= sinceIso)
+    const revenueFen = periodOrders.reduce((sum, item) => sum + Number(item.amount_fen || 0), 0)
+    const refundFen = periodRefunds.reduce((sum, item) => sum + Number(item.requested_amount_fen || 0), 0)
+    const netRevenueFen = Math.max(0, revenueFen - refundFen)
+    const completedUsage = (usage || []).filter(item => item.status === 'completed')
+    const estimatedCostFen = completedUsage.reduce((sum, item) => sum + Number(item.estimated_cost_fen || 0), 0)
+    const payingUsers = new Set(periodOrders.map(item => item.user_id))
+    const lifetimeOrderCounts = (orders || []).reduce((map, item) => map.set(item.user_id, (map.get(item.user_id) || 0) + 1), new Map())
+    const repeatPayingUsers = [...payingUsers].filter(userId => (lifetimeOrderCounts.get(userId) || 0) >= 2).length
+    const newUserIds = new Set(periodProfiles.map(item => item.id))
+    const convertedNewUsers = new Set((orders || []).filter(item => newUserIds.has(item.user_id)).map(item => item.user_id)).size
+    const failedCount = (usage || []).filter(item => item.status === 'failed').length
+    const allFinished = completedUsage.length + failedCount
+    const byActionMap = new Map()
+    for (const item of usage || []) { const row = byActionMap.get(item.action) || { action: item.action, completed: 0, failed: 0, credits: 0, estimatedCostFen: 0 }; if (item.status === 'completed') { row.completed += 1; row.credits += Number(item.credits || 0); row.estimatedCostFen += Number(item.estimated_cost_fen || 0) } else if (item.status === 'failed') row.failed += 1; byActionMap.set(item.action, row) }
+    const dateKey = value => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value))
+    const trend = new Map()
+    for (let offset = 0; offset < days; offset += 1) { const date = new Date(since.getTime() + offset * 86400000); trend.set(dateKey(date), { date: dateKey(date), revenueFen: 0, refundFen: 0, costFen: 0, generations: 0, registrations: 0 }) }
+    periodOrders.forEach(item => { const row = trend.get(dateKey(item.paid_at)); if (row) row.revenueFen += Number(item.amount_fen || 0) })
+    periodRefunds.forEach(item => { const row = trend.get(dateKey(item.reviewed_at || item.created_at)); if (row) row.refundFen += Number(item.requested_amount_fen || 0) })
+    completedUsage.forEach(item => { const row = trend.get(dateKey(item.created_at)); if (row) { row.costFen += Number(item.estimated_cost_fen || 0); row.generations += 1 } })
+    periodProfiles.forEach(item => { const row = trend.get(dateKey(item.created_at)); if (row) row.registrations += 1 })
+    res.json({ days, freshness: new Date().toISOString(), metrics: { totalUsers: profiles?.length || 0, newUsers: periodProfiles.length, payingUsers: payingUsers.size, newUserConversionRate: periodProfiles.length ? convertedNewUsers / periodProfiles.length : 0, repeatPurchaseRate: payingUsers.size ? repeatPayingUsers / payingUsers.size : 0, paidOrders: periodOrders.length, revenueFen, refundFen, netRevenueFen, estimatedCostFen, estimatedGrossProfitFen: netRevenueFen - estimatedCostFen, successRate: allFinished ? completedUsage.length / allFinished : 0, completedGenerations: completedUsage.length }, byAction: [...byActionMap.values()].sort((a, b) => b.completed - a.completed), trend: [...trend.values()] })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/admin/cost-control', requireUser, requireAdmin, async (_req, res, next) => {
   try {
     const now = new Date()
