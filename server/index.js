@@ -562,6 +562,68 @@ app.post('/api/admin/system-health/cleanup-stale', requireUser, requireAdmin, as
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/data-lifecycle', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const { data: settings, error: settingsError } = await supabaseAdmin().from('data_lifecycle_settings').select('*').eq('id', true).single()
+    if (settingsError) throw settingsError
+    const assetBefore = new Date(Date.now() - settings.generated_asset_days * 86400000).toISOString()
+    const supportBefore = new Date(Date.now() - settings.closed_support_days * 86400000).toISOString()
+    const [{ data: assets, error: assetError }, { count: supportCount, error: supportError }] = await Promise.all([
+      supabaseAdmin().from('usage_records').select('id,output_urls').lt('created_at', assetBefore).limit(1000),
+      supabaseAdmin().from('support_conversations').select('id', { count: 'exact', head: true }).eq('status', 'closed').lt('updated_at', supportBefore)
+    ])
+    if (assetError) throw assetError
+    if (supportError) throw supportError
+    const assetRecords = (assets || []).filter(item => Array.isArray(item.output_urls) && item.output_urls.length)
+    const assetCount = assetRecords.reduce((sum, item) => sum + item.output_urls.length, 0)
+    res.json({ settings, preview: { assetRecords: assetRecords.length, assetFiles: assetCount, closedSupport: supportCount || 0 } })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/data-lifecycle', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const generatedAssetDays = Number(req.body.generated_asset_days)
+    const closedSupportDays = Number(req.body.closed_support_days)
+    if (!Number.isInteger(generatedAssetDays) || generatedAssetDays < 7 || generatedAssetDays > 3650 || !Number.isInteger(closedSupportDays) || closedSupportDays < 30 || closedSupportDays > 3650) return res.status(400).json({ error: '作品保留天数需为 7–3650 天，客服记录需为 30–3650 天' })
+    const { data, error } = await supabaseAdmin().from('data_lifecycle_settings').update({ generated_asset_days: generatedAssetDays, closed_support_days: closedSupportDays, updated_by: req.user.id, updated_at: new Date().toISOString() }).eq('id', true).select('*').single()
+    if (error) throw error
+    res.json({ settings: data })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/data-lifecycle/cleanup', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    if (req.body.confirm !== 'CLEANUP_EXPIRED_DATA') return res.status(400).json({ error: '需要明确确认清理操作' })
+    const { data: settings, error: settingsError } = await supabaseAdmin().from('data_lifecycle_settings').select('*').eq('id', true).single()
+    if (settingsError) throw settingsError
+    const assetBefore = new Date(Date.now() - settings.generated_asset_days * 86400000).toISOString()
+    const supportBefore = new Date(Date.now() - settings.closed_support_days * 86400000).toISOString()
+    const { data: oldRecords, error: recordsError } = await supabaseAdmin().from('usage_records').select('id,output_urls').lt('created_at', assetBefore).limit(1000)
+    if (recordsError) throw recordsError
+    const records = (oldRecords || []).filter(item => Array.isArray(item.output_urls) && item.output_urls.length)
+    const marker = '/storage/v1/object/public/generated-assets/'
+    const paths = records.flatMap(item => item.output_urls).map(url => { const index = String(url).indexOf(marker); return index >= 0 ? decodeURIComponent(String(url).slice(index + marker.length)) : '' }).filter(Boolean)
+    for (let index = 0; index < paths.length; index += 100) { const { error } = await supabaseAdmin().storage.from('generated-assets').remove(paths.slice(index, index + 100)); if (error) throw error }
+    const ids = records.map(item => item.id)
+    if (ids.length) { const { error } = await supabaseAdmin().from('usage_records').update({ output_urls: [] }).in('id', ids); if (error) throw error }
+    const { data: oldConversations, error: supportReadError } = await supabaseAdmin().from('support_conversations').select('id').eq('status', 'closed').lt('updated_at', supportBefore).limit(1000)
+    if (supportReadError) throw supportReadError
+    const conversationIds = (oldConversations || []).map(item => item.id)
+    if (conversationIds.length) { const { error } = await supabaseAdmin().from('support_conversations').delete().in('id', conversationIds); if (error) throw error }
+    await supabaseAdmin().from('data_lifecycle_settings').update({ last_cleanup_at: new Date().toISOString(), updated_by: req.user.id, updated_at: new Date().toISOString() }).eq('id', true)
+    res.json({ cleaned: { assetRecords: ids.length, assetFiles: paths.length, closedSupport: conversationIds.length } })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/data-export', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const tables = ['profiles', 'usage_records', 'recharge_orders', 'credit_transactions', 'credit_packages', 'refund_requests', 'referrals', 'referral_settings', 'favorites', 'support_conversations', 'support_messages', 'user_consents', 'payment_settings', 'cost_control_settings', 'data_lifecycle_settings']
+    const entries = await Promise.all(tables.map(async table => { const { data, error } = await supabaseAdmin().from(table).select('*').limit(10000); if (error) throw new Error(`${table}: ${error.message}`); return [table, data || []] }))
+    res.setHeader('Content-Disposition', `attachment; filename="lingjing-backup-${new Date().toISOString().slice(0, 10)}.json"`)
+    res.json({ format: 'lingjing-business-backup-v1', exportedAt: new Date().toISOString(), note: 'Contains business records and generated asset URLs; media file bytes are not embedded.', data: Object.fromEntries(entries) })
+  } catch (error) { next(error) }
+})
+
 app.patch('/api/admin/cost-control', requireUser, requireAdmin, async (req, res, next) => {
   try {
     const allowedActions = ['copy_generation', 'prompt_enhance', 'image_generation', 'image_edit', 'gif_generation', 'video_generation']

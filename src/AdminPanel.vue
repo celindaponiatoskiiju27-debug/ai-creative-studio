@@ -41,6 +41,13 @@
       <button class="cost-save" :disabled="costSaving" @click="saveCostControl">{{ costSaving ? '保存中…' : '保存成本与熔断设置' }}</button>
       <p class="cost-note">建议先按供应商账单保守填写，并每周校准一次。预算填写 0 表示该周期不设上限。</p>
     </section>
+    <section class="lifecycle-card">
+      <div class="admin-section-title"><div><h3>数据备份与生命周期</h3><p>先导出业务备份，再清理过期云端作品；订单、算力流水和协议记录不会自动删除</p></div><button @click="loadLifecycle">刷新预览</button></div>
+      <div class="lifecycle-stats"><div><span>待清理作品文件</span><b>{{ lifecyclePreview.assetFiles || 0 }}</b><small>{{ lifecyclePreview.assetRecords || 0 }} 条生成记录涉及文件</small></div><div><span>待清理客服会话</span><b>{{ lifecyclePreview.closedSupport || 0 }}</b><small>仅已关闭且超过保留期</small></div><div><span>上次清理</span><b class="date">{{ formatDate(lifecycleSettings.last_cleanup_at) }}</b><small>建议清理前下载备份</small></div></div>
+      <div class="lifecycle-settings"><label>云端作品保留天数<input v-model.number="lifecycleSettings.generated_asset_days" type="number" min="7" max="3650" /></label><label>已关闭客服记录保留天数<input v-model.number="lifecycleSettings.closed_support_days" type="number" min="30" max="3650" /></label><button :disabled="lifecycleSaving" @click="saveLifecycle">{{ lifecycleSaving ? '保存中…' : '保存保留策略' }}</button></div>
+      <div class="lifecycle-actions"><button class="export" :disabled="lifecycleExporting" @click="exportBusinessData">{{ lifecycleExporting ? '正在导出…' : '下载业务数据备份（JSON）' }}</button><button class="cleanup" :disabled="lifecycleCleaning || !(lifecyclePreview.assetFiles || lifecyclePreview.closedSupport)" @click="cleanupExpiredData">{{ lifecycleCleaning ? '正在清理…' : '清理预览中的过期数据' }}</button></div>
+      <p class="lifecycle-note">业务备份包含敏感用户和订单信息，请保存到加密磁盘，不要上传到公开网盘或发送给无关人员。备份文件记录作品链接，不包含图片、GIF和视频的实际文件内容。</p>
+    </section>
     <section class="referral-admin-card">
       <div class="admin-section-title"><div><h3>邀请奖励与预算</h3><p>控制双方奖励、每月总预算和单个邀请人的奖励人数</p></div><button @click="loadReferrals">刷新记录</button></div>
       <div class="referral-admin-stats"><div><span>邀请总数</span><b>{{ referralStats.total || 0 }}</b></div><div><span>已发奖励</span><b>{{ referralStats.rewarded || 0 }}</b></div><div><span>本月已用预算</span><b>{{ referralStats.monthSpent || 0 }} 点</b></div><div><span>本月剩余预算</span><b>{{ Math.max(0, (referralSettings.monthly_budget || 0) - (referralStats.monthSpent || 0)) }} 点</b></div></div>
@@ -134,7 +141,7 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', lifecycleSettings: { generated_asset_days: 90, closed_support_days: 365, last_cleanup_at: null }, lifecyclePreview: { assetRecords: 0, assetFiles: 0, closedSupport: 0 }, lifecycleSaving: false, lifecycleCleaning: false, lifecycleExporting: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
@@ -144,7 +151,7 @@ export default {
     healthStatusName() { return ({ healthy: '系统运行正常', warning: '系统需要关注', critical: '系统存在严重异常' })[this.systemHealth.status] || '正在检查系统' },
     uptimeText() { const seconds = Number(this.systemHealth.uptimeSeconds || 0); const days = Math.floor(seconds / 86400); const hours = Math.floor(seconds % 86400 / 3600); return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${Math.floor(seconds % 3600 / 60)} 分钟` }
   },
-  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadCostControl(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
+  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadCostControl(); this.loadLifecycle(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
@@ -163,6 +170,30 @@ export default {
       try { const response = await fetch('/api/admin/system-health/cleanup-stale', { method: 'POST', headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '清理超时任务失败'); await Promise.all([this.loadSystemHealth(false), this.loadUsers()]); window.alert(`已清理并退款 ${data.cleaned} 个超时任务`) }
       catch (error) { this.errorMessage = error.message }
       finally { this.healthCleaning = false }
+    },
+    async loadLifecycle() {
+      try { const response = await fetch('/api/admin/data-lifecycle', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取数据保留策略失败'); this.lifecycleSettings = data.settings; this.lifecyclePreview = data.preview }
+      catch (error) { this.errorMessage = error.message }
+    },
+    async saveLifecycle() {
+      this.lifecycleSaving = true; this.errorMessage = ''
+      try { const response = await fetch('/api/admin/data-lifecycle', { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(this.lifecycleSettings) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存数据保留策略失败'); this.lifecycleSettings = data.settings; await this.loadLifecycle() }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.lifecycleSaving = false }
+    },
+    async exportBusinessData() {
+      this.lifecycleExporting = true; this.errorMessage = ''
+      try { const response = await fetch('/api/admin/data-export', { headers: this.headers() }); if (!response.ok) { const data = await response.json(); throw new Error(data.error || '导出备份失败') } const blob = await response.blob(); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `lingjing-backup-${new Date().toISOString().slice(0, 10)}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000) }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.lifecycleExporting = false }
+    },
+    async cleanupExpiredData() {
+      const message = `即将永久删除 ${this.lifecyclePreview.assetFiles || 0} 个过期作品文件和 ${this.lifecyclePreview.closedSupport || 0} 个已关闭客服会话。\n\n请先点击“下载业务数据备份”。此操作不能撤销，是否继续？`
+      if (!window.confirm(message) || window.prompt('请输入“确认清理”继续：') !== '确认清理') return
+      this.lifecycleCleaning = true; this.errorMessage = ''
+      try { const response = await fetch('/api/admin/data-lifecycle/cleanup', { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ confirm: 'CLEANUP_EXPIRED_DATA' }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '清理过期数据失败'); window.alert(`清理完成：${data.cleaned.assetFiles} 个作品文件，${data.cleaned.closedSupport} 个客服会话`); await this.loadLifecycle() }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.lifecycleCleaning = false }
     },
     money(fen) { return (Number(fen || 0) / 100).toFixed(2) },
     budgetPercent(used, limit) { return Number(limit) > 0 ? Math.min(100, Math.round(Number(used || 0) / Number(limit) * 100)) : 0 },
