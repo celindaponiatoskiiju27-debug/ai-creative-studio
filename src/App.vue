@@ -312,7 +312,7 @@
     </div>
     <div v-if="rechargeOpen" class="recharge-overlay" @click.self="rechargeOpen = false">
       <section class="recharge-modal">
-        <header><div><h2>充值算力</h2><p>选择适合你的套餐，充值算力长期有效</p></div><button @click="rechargeOpen = false">×</button></header>
+        <header><div><h2>内测充值算力</h2><p>当前仅开放小额人工充值，请确认订单与退款规则</p></div><button @click="rechargeOpen = false">×</button></header>
         <div class="package-grid">
           <button v-for="item in packages" :key="item.id" :class="{ selected: selectedPackage === item.id }" @click="selectedPackage = item.id">
             <em v-if="item.recommended">推荐</em><b>{{ item.name }}</b><strong>¥{{ item.price }}</strong><span>{{ item.credits }} 点算力</span><small>约 ¥{{ (item.price / item.credits).toFixed(3) }}/点</small>
@@ -320,13 +320,15 @@
         </div>
         <div class="payment-box">
           <a v-if="billing.paymentQrUrl" class="payment-qr-link" :href="billing.paymentQrUrl" target="_blank" title="点击查看大图"><img :src="billing.paymentQrUrl" alt="微信付款二维码" /><small>扫码支付 · 点击查看大图</small></a>
-          <div><b>当前为人工审核充值</b><p>{{ billing.instructions || '提交订单后，请联系管理员完成付款审核。' }}</p><input v-model.trim="paymentReference" maxlength="200" placeholder="付款备注或转账单号（选填）" /></div>
+          <div><b>当前为内测人工充值</b><p>{{ billing.instructions || '提交订单后，请等待管理员核对到账。' }}</p><input v-model.trim="paymentReference" maxlength="200" placeholder="付款单号或付款备注（必填）" /><label class="payment-proof-input">上传付款截图（必填）<input ref="paymentProofInput" type="file" accept="image/png,image/jpeg,image/webp" @change="selectPaymentProof" /></label><small>{{ paymentProof ? paymentProof.name : '支持 PNG、JPG、WebP，最大 5MB' }}</small></div>
         </div>
+        <label class="refund-agreement"><input v-model="refundAgreement" type="checkbox" /> 我已确认套餐金额与算力数量，并阅读退款规则：未使用算力可申请退款，已消耗算力及赠送算力不折现。</label>
         <p v-if="rechargeMessage" :class="rechargeError ? 'api-error' : 'recharge-success'">{{ rechargeMessage }}</p>
-        <button class="generate-btn" :class="{ loading: rechargeLoading }" :disabled="rechargeLoading || !selectedPackage" @click="createRechargeOrder">
+        <button class="generate-btn" :class="{ loading: rechargeLoading }" :disabled="rechargeLoading || !selectedPackage || !refundAgreement" @click="createRechargeOrder">
           <span v-if="rechargeLoading" class="button-spinner"></span><span v-else>✦</span><b>{{ rechargeLoading ? '正在提交…' : '提交充值订单' }}</b>
         </button>
-        <div v-if="rechargeOrders.length" class="order-list"><h3>最近订单</h3><div v-for="order in rechargeOrders" :key="order.id"><span>{{ order.order_no }}</span><b>¥{{ (order.amount_fen / 100).toFixed(2) }} / {{ order.credits }}点</b><em :class="order.status">{{ orderStatus(order.status) }}</em></div></div>
+        <div v-if="rechargeOrders.length" class="order-list"><h3>最近订单</h3><div v-for="order in rechargeOrders" :key="order.id"><span>{{ order.order_no }}</span><b>¥{{ (order.amount_fen / 100).toFixed(2) }} / {{ order.credits }}点</b><em :class="order.status">{{ orderStatus(order.status) }}</em><button v-if="['paid','partially_refunded'].includes(order.status) && !(order.refund_requests || []).some(item => item.status === 'pending')" @click="requestRefund(order)">申请退款</button></div></div>
+        <details v-if="creditTransactions.length" class="credit-ledger"><summary>查看算力流水</summary><div v-for="item in creditTransactions" :key="item.id"><span>{{ item.description || item.type }}</span><b :class="{ plus: item.amount > 0 }">{{ item.amount > 0 ? '+' : '' }}{{ item.amount }}</b><small>余额 {{ item.balance_after }} · {{ formatHistoryDate(item.created_at) }}</small></div></details>
       </section>
     </div>
     <div v-if="historyOpen" class="recharge-overlay" @click.self="historyOpen = false">
@@ -466,6 +468,9 @@ export default {
       rechargeError: false,
       selectedPackage: "popular",
       paymentReference: "",
+      paymentProof: null,
+      refundAgreement: false,
+      creditTransactions: [],
       packages: [],
       rechargeOrders: [],
       billing: {},
@@ -651,32 +656,41 @@ export default {
       if (!this.session) { this.requestLogin('请先登录后再充值'); return; }
       this.rechargeOpen = true; this.rechargeMessage = ''; this.rechargeError = false;
       try {
-        const [configResponse, ordersResponse] = await Promise.all([
-          fetch('/api/billing/config'), fetch('/api/billing/orders', { headers: this.authHeaders() })
+        const [configResponse, ordersResponse, transactionsResponse] = await Promise.all([
+          fetch('/api/billing/config'), fetch('/api/billing/orders', { headers: this.authHeaders() }), fetch('/api/billing/transactions', { headers: this.authHeaders() })
         ]);
-        const config = await configResponse.json(); const orders = await ordersResponse.json();
+        const config = await configResponse.json(); const orders = await ordersResponse.json(); const transactions = await transactionsResponse.json();
         if (!configResponse.ok) throw new Error(config.error || '无法读取充值套餐');
         if (!ordersResponse.ok) throw new Error(orders.error || '无法读取充值订单');
+        if (!transactionsResponse.ok) throw new Error(transactions.error || '无法读取算力流水');
         this.billing = config; this.packages = config.packages || []; this.rechargeOrders = orders.orders || [];
+        this.creditTransactions = transactions.transactions || [];
         if (!this.packages.some(item => item.id === this.selectedPackage)) this.selectedPackage = this.packages[0]?.id || '';
       } catch (error) { this.rechargeMessage = error.message; this.rechargeError = true; }
     },
     async createRechargeOrder() {
       if (this.rechargeLoading || !this.selectedPackage) return;
+      if (!this.paymentReference.trim()) { this.rechargeMessage = '请填写付款单号或付款备注'; this.rechargeError = true; return; }
+      if (!this.paymentProof) { this.rechargeMessage = '请上传付款截图'; this.rechargeError = true; return; }
+      if (!this.refundAgreement) { this.rechargeMessage = '请先阅读并确认退款规则'; this.rechargeError = true; return; }
       this.rechargeLoading = true; this.rechargeMessage = ''; this.rechargeError = false;
       try {
-        const response = await fetch('/api/billing/orders', {
-          method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ packageId: this.selectedPackage, paymentReference: this.paymentReference })
-        });
+        const body = new FormData(); body.append('packageId', this.selectedPackage); body.append('paymentReference', this.paymentReference); body.append('proof', this.paymentProof);
+        const response = await fetch('/api/billing/orders', { method: 'POST', headers: this.authHeaders(), body });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '充值订单提交失败');
-        this.rechargeOrders.unshift(data.order); this.paymentReference = '';
+        this.rechargeOrders.unshift(data.order); this.paymentReference = ''; this.paymentProof = null; this.refundAgreement = false; if (this.$refs.paymentProofInput) this.$refs.paymentProofInput.value = '';
         this.rechargeMessage = `订单 ${data.order.order_no} 已提交，请完成付款并等待管理员审核。`;
       } catch (error) { this.rechargeMessage = error.message; this.rechargeError = true; }
       finally { this.rechargeLoading = false; }
     },
-    orderStatus(status) { return ({ pending: '待审核', paid: '已到账', rejected: '未通过', cancelled: '已取消' })[status] || status; },
+    selectPaymentProof(event) { const file = event.target.files?.[0] || null; if (file && file.size > 5 * 1024 * 1024) { this.rechargeMessage = '付款截图不能超过 5MB'; this.rechargeError = true; event.target.value = ''; this.paymentProof = null; return; } this.paymentProof = file; },
+    async requestRefund(order) {
+      const reason = window.prompt('请填写退款原因（至少 5 个字）。系统将按当前未使用算力计算可退款金额：'); if (!reason) return;
+      try { const response = await fetch(`/api/billing/orders/${order.id}/refund`, { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ reason }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '退款申请失败'); order.refund_requests = [data.refund, ...(order.refund_requests || [])]; this.rechargeMessage = `退款申请已提交，预计退款 ¥${(data.refund.requested_amount_fen / 100).toFixed(2)}，管理员确认实际退款后扣回 ${data.refund.requested_credits} 点算力。`; this.rechargeError = false; }
+      catch (error) { this.rechargeMessage = error.message; this.rechargeError = true; }
+    },
+    orderStatus(status) { return ({ pending: '待审核', paid: '已到账', rejected: '未通过', cancelled: '已取消', partially_refunded: '部分退款', refunded: '已退款' })[status] || status; },
     async openHistory(onlyCopy = false) {
       if (!this.session) { this.requestLogin('请先登录后查看生成记录'); return; }
       this.historyOnlyCopy = onlyCopy; this.historyOpen = true; this.historyLoading = true; this.historyError = '';

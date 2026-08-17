@@ -129,6 +129,11 @@ async function reserveGeneration(userId, body, requestedCredits, outputCount) {
     const { error: actionError } = await supabaseAdmin().from('usage_records').update({ action: String(body.action).slice(0, 50) }).eq('id', data)
     if (actionError) throw actionError
   }
+  if (credits > 0 && data) {
+    const profile = await profileFor(userId)
+    const { error: ledgerError } = await supabaseAdmin().from('credit_transactions').insert({ user_id: userId, type: 'consume', amount: -credits, balance_after: profile.credits, reference_type: 'usage_record', reference_id: data, description: 'AI 生成消耗' })
+    if (ledgerError && ledgerError.code !== '42P01') console.error('[credit-ledger]', ledgerError.message)
+  }
   return data
 }
 
@@ -333,8 +338,14 @@ async function archiveOrOriginal(userId, usageId, urls) {
 
 async function finishGeneration(usageId, success) {
   if (!usageId) return
+  const { data: usageBefore } = !success ? await supabaseAdmin().from('usage_records').select('user_id,credits').eq('id', usageId).single() : { data: null }
   const { error } = await supabaseAdmin().rpc('finish_generation', { p_usage_id: usageId, p_success: success })
   if (error) throw error
+  if (!success && usageBefore?.credits > 0) {
+    const profile = await profileFor(usageBefore.user_id)
+    const { error: ledgerError } = await supabaseAdmin().from('credit_transactions').insert({ user_id: usageBefore.user_id, type: 'refund', amount: usageBefore.credits, balance_after: profile.credits, reference_type: 'usage_record', reference_id: usageId, description: '生成失败自动返还' })
+    if (ledgerError && ledgerError.code !== '42P01') console.error('[credit-ledger-refund]', ledgerError.message)
+  }
   if (success) {
     const { error: referralError } = await supabaseAdmin().rpc('complete_referral_reward', { p_usage_id: usageId })
     if (referralError && !/complete_referral_reward/i.test(referralError.message)) console.error('[referral-reward]', referralError.message)
@@ -615,7 +626,8 @@ app.post('/api/support/messages', requireUser, async (req, res, next) => {
 
 app.get('/api/admin/recharge-orders', requireUser, requireAdmin, async (req, res, next) => {
   try {
-    let query = supabaseAdmin().from('recharge_orders').select('id,order_no,user_id,package_id,amount_fen,credits,payment_reference,status,created_at,paid_at').order('created_at', { ascending: false }).limit(200)
+    await supabaseAdmin().from('recharge_orders').update({ status: 'cancelled' }).eq('status', 'pending').lt('expires_at', new Date().toISOString())
+    let query = supabaseAdmin().from('recharge_orders').select('id,order_no,user_id,package_id,amount_fen,credits,payment_reference,payment_proof_path,status,created_at,paid_at,expires_at,refunded_credits').order('created_at', { ascending: false }).limit(200)
     if (req.query.status) query = query.eq('status', req.query.status)
     const { data: orders, error } = await query
     if (error) throw error
@@ -623,7 +635,8 @@ app.get('/api/admin/recharge-orders', requireUser, requireAdmin, async (req, res
     const { data: profiles, error: profileError } = userIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', userIds) : { data: [], error: null }
     if (profileError) throw profileError
     const emails = new Map(profiles.map(item => [item.id, item.email]))
-    res.json({ orders: orders.map(item => ({ ...item, email: emails.get(item.user_id) || '' })) })
+    const mapped = await Promise.all(orders.map(async item => { const proof = item.payment_proof_path ? await supabaseAdmin().storage.from('payment-proofs').createSignedUrl(item.payment_proof_path, 3600) : null; return { ...item, payment_proof_url: proof?.data?.signedUrl || '', email: emails.get(item.user_id) || '' } }))
+    res.json({ orders: mapped })
   } catch (error) { next(error) }
 })
 
@@ -737,6 +750,24 @@ app.post('/api/admin/recharge-orders/:id/review', requireUser, requireAdmin, asy
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/refunds', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('refund_requests').select('id,order_id,user_id,requested_credits,requested_amount_fen,reason,status,admin_note,created_at,reviewed_at').order('created_at', { ascending: false }).limit(200)
+    if (error) throw error
+    const ids = [...new Set((data || []).map(item => item.user_id))]; const { data: profiles } = ids.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', ids) : { data: [] }; const emails = new Map((profiles || []).map(item => [item.id, item.email]))
+    res.json({ refunds: (data || []).map(item => ({ ...item, email: emails.get(item.user_id) || '' })) })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/refunds/:id/review', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const approve = req.body.approve === true; const adminNote = String(req.body.adminNote || '').trim().slice(0, 500)
+    const { data, error } = await supabaseAdmin().rpc('admin_review_refund', { p_admin_id: req.user.id, p_refund_id: req.params.id, p_approve: approve, p_admin_note: adminNote || null })
+    if (error) { if (error.message?.includes('INSUFFICIENT_REFUNDABLE_CREDITS')) { error.status = 409; error.message = '用户当前剩余算力不足，暂不能执行退款扣回' } throw error }
+    res.json({ credits: data, status: approve ? 'approved' : 'rejected' })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/billing/config', async (_req, res, next) => {
   try {
     const packages = await loadCreditPackages(true)
@@ -756,15 +787,16 @@ app.get('/api/billing/config', async (_req, res, next) => {
 
 app.get('/api/billing/orders', requireUser, async (req, res, next) => {
   try {
+    await supabaseAdmin().from('recharge_orders').update({ status: 'cancelled' }).eq('user_id', req.user.id).eq('status', 'pending').lt('expires_at', new Date().toISOString())
     const { data, error } = await supabaseAdmin().from('recharge_orders')
-      .select('id,order_no,package_id,amount_fen,credits,payment_provider,payment_reference,status,created_at,paid_at')
+      .select('id,order_no,package_id,amount_fen,credits,payment_provider,payment_reference,status,created_at,paid_at,expires_at,refunded_credits,refund_requests(id,status,requested_credits,requested_amount_fen,reason,created_at)')
       .eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30)
     if (error) throw error
     res.json({ orders: data })
   } catch (error) { next(error) }
 })
 
-app.post('/api/billing/orders', requireUser, async (req, res, next) => {
+app.post('/api/billing/orders', requireUser, upload.single('proof'), async (req, res, next) => {
   try {
     const packages = await loadCreditPackages(true)
     const selected = packages.find(item => item.id === req.body.packageId)
@@ -778,13 +810,38 @@ app.post('/api/billing/orders', requireUser, async (req, res, next) => {
     }
     const orderNo = `LJ${Date.now()}${Math.random().toString(36).slice(2, 8).toUpperCase()}`
     const reference = String(req.body.paymentReference || '').trim().slice(0, 200)
+    if (!reference) return res.status(400).json({ error: '请填写付款单号或付款备注' })
+    if (!req.file) return res.status(400).json({ error: '请上传付款截图' })
+    if (req.file.size > 5 * 1024 * 1024) return res.status(400).json({ error: '付款截图不能超过 5MB' })
+    const proofPath = `${req.user.id}/${orderNo}.${req.file.mimetype.split('/')[1] || 'jpg'}`
+    const { error: proofError } = await supabaseAdmin().storage.from('payment-proofs').upload(proofPath, req.file.buffer, { contentType: req.file.mimetype, upsert: false })
+    if (proofError) throw proofError
     const { data, error } = await supabaseAdmin().from('recharge_orders').insert({
       order_no: orderNo, user_id: req.user.id, package_id: selected.id, amount_fen: priceFen,
-      credits: selected.credits, payment_provider: 'manual', payment_reference: reference || null
-    }).select('id,order_no,package_id,amount_fen,credits,status,created_at').single()
+      credits: selected.credits, payment_provider: 'manual', payment_reference: reference, payment_proof_path: proofPath
+    }).select('id,order_no,package_id,amount_fen,credits,status,created_at,expires_at').single()
     if (error) throw error
     res.status(201).json({ order: data })
   } catch (error) { next(error) }
+})
+
+app.post('/api/billing/orders/:id/refund', requireUser, async (req, res, next) => {
+  try {
+    const reason = String(req.body.reason || '').trim().slice(0, 500); if (reason.length < 5) return res.status(400).json({ error: '请填写至少 5 个字的退款原因' })
+    const { data: order, error: orderError } = await supabaseAdmin().from('recharge_orders').select('id,user_id,amount_fen,credits,refunded_credits,status').eq('id', req.params.id).eq('user_id', req.user.id).single()
+    if (orderError) throw orderError; if (!['paid','partially_refunded'].includes(order.status)) return res.status(409).json({ error: '该订单当前不能申请退款' })
+    const profile = await profileFor(req.user.id); const refundableCredits = Math.min(profile.credits, order.credits - order.refunded_credits)
+    if (refundableCredits < 1) return res.status(409).json({ error: '该订单已没有可退回的未使用算力' })
+    const amountFen = Math.floor(order.amount_fen * refundableCredits / order.credits)
+    const { data, error } = await supabaseAdmin().from('refund_requests').insert({ order_id: order.id, user_id: req.user.id, requested_credits: refundableCredits, requested_amount_fen: amountFen, reason }).select('*').single()
+    if (error) throw error
+    res.status(201).json({ refund: data })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/billing/transactions', requireUser, async (req, res, next) => {
+  try { const { data, error } = await supabaseAdmin().from('credit_transactions').select('id,type,amount,balance_after,description,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(100); if (error) throw error; res.json({ transactions: data || [] }) }
+  catch (error) { next(error) }
 })
 
 app.post('/api/copy/generate', requireUser, async (req, res, next) => {

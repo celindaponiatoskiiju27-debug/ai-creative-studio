@@ -64,12 +64,19 @@
         <thead><tr><th>订单号 / 用户</th><th>套餐</th><th>金额</th><th>付款备注</th><th>提交时间</th><th>状态 / 操作</th></tr></thead>
         <tbody>
           <tr v-for="order in orders" :key="order.id">
-            <td><b>{{ order.order_no }}</b><small>{{ order.email }}</small></td><td>{{ order.credits }} 点</td><td>¥{{ (order.amount_fen / 100).toFixed(2) }}</td><td>{{ order.payment_reference || '未填写' }}</td><td>{{ formatDate(order.created_at) }}</td>
+            <td><b>{{ order.order_no }}</b><small>{{ order.email }}</small></td><td>{{ order.credits }} 点</td><td>¥{{ (order.amount_fen / 100).toFixed(2) }}</td><td>{{ order.payment_reference || '未填写' }}<a v-if="order.payment_proof_url" :href="order.payment_proof_url" target="_blank">查看付款截图</a></td><td>{{ formatDate(order.created_at) }}</td>
             <td><div v-if="order.status === 'pending'" class="order-actions"><button :disabled="busyId === order.id" @click="reviewOrder(order, true)">确认到账</button><button class="reject" :disabled="busyId === order.id" @click="reviewOrder(order, false)">拒绝</button></div><strong v-else>{{ orderStatus(order.status) }}</strong></td>
           </tr>
           <tr v-if="!orders.length"><td colspan="6" class="admin-empty">暂无充值订单</td></tr>
         </tbody>
       </table>
+    </div>
+    <div class="admin-table-wrap refund-admin">
+      <div class="admin-section-title"><div><h3>退款申请</h3><p>请先完成实际退款，再点击确认退款；系统随后扣回相应算力</p></div><button @click="loadRefunds">刷新退款</button></div>
+      <table class="admin-table"><thead><tr><th>用户</th><th>退款金额</th><th>扣回算力</th><th>原因</th><th>申请时间</th><th>状态 / 操作</th></tr></thead><tbody>
+        <tr v-for="item in refunds" :key="item.id"><td>{{ item.email }}</td><td>¥{{ (item.requested_amount_fen / 100).toFixed(2) }}</td><td>{{ item.requested_credits }} 点</td><td>{{ item.reason }}</td><td>{{ formatDate(item.created_at) }}</td><td><div v-if="item.status === 'pending'" class="order-actions"><button :disabled="busyId === item.id" @click="reviewRefund(item,true)">确认已退款</button><button class="reject" :disabled="busyId === item.id" @click="reviewRefund(item,false)">拒绝</button></div><strong v-else>{{ item.status === 'approved' ? '已退款' : '已拒绝' }}</strong></td></tr>
+        <tr v-if="!refunds.length"><td colspan="6" class="admin-empty">暂无退款申请</td></tr>
+      </tbody></table>
     </div>
     <div class="admin-table-wrap">
       <table class="admin-table">
@@ -96,13 +103,13 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
     selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) }
   },
-  mounted() { this.loadUsers(); this.loadOrders(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals() },
+  mounted() { this.loadUsers(); this.loadOrders(); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals() },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
     async loadReferrals() {
@@ -132,6 +139,18 @@ export default {
         if (!response.ok) throw new Error(data.error || '读取充值订单失败')
         this.orders = data.orders || []
       } catch (error) { this.errorMessage = error.message }
+    },
+    async loadRefunds() {
+      try { const response = await fetch('/api/admin/refunds', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取退款申请失败'); this.refunds = data.refunds || [] }
+      catch (error) { this.errorMessage = error.message }
+    },
+    async reviewRefund(item, approve) {
+      const message = approve ? `请确认你已经实际向用户退款 ¥${(item.requested_amount_fen / 100).toFixed(2)}。确认后系统将扣回 ${item.requested_credits} 点算力。` : '请输入拒绝退款的原因：';
+      const adminNote = approve ? (window.confirm(message) ? '管理员确认已完成实际退款' : null) : window.prompt(message); if (adminNote === null) return;
+      this.busyId = item.id; this.errorMessage = '';
+      try { const response = await fetch(`/api/admin/refunds/${item.id}/review`, { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ approve, adminNote }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '退款审核失败'); item.status = data.status; await this.loadUsers(); await this.loadOrders(); }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.busyId = '' }
     },
     async loadSupportConversations() {
       try {
