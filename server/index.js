@@ -192,6 +192,11 @@ async function reserveGeneration(userId, body, requestedCredits, outputCount) {
   return data
 }
 
+async function auditAdmin(req, action, targetType, targetId, details = {}) {
+  const { error } = await supabaseAdmin().from('admin_audit_logs').insert({ admin_id: req.user.id, action, target_type: targetType, target_id: targetId ? String(targetId) : null, details, ip_address: req.ip || null })
+  if (error) console.error('[admin-audit]', action, error.message)
+}
+
 function configureFal() {
   if (!process.env.FAL_KEY) {
     const error = new Error('服务端尚未配置 FAL_KEY')
@@ -571,6 +576,18 @@ app.get('/api/admin/usage', requireUser, requireAdmin, async (req, res, next) =>
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/audit-logs', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const { data: logs, error } = await supabaseAdmin().from('admin_audit_logs').select('id,admin_id,action,target_type,target_id,details,ip_address,created_at').order('created_at', { ascending: false }).limit(200)
+    if (error) throw error
+    const adminIds = [...new Set((logs || []).map(item => item.admin_id))]
+    const { data: admins, error: adminError } = adminIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', adminIds) : { data: [], error: null }
+    if (adminError) throw adminError
+    const emails = new Map((admins || []).map(item => [item.id, item.email]))
+    res.json({ logs: (logs || []).map(item => ({ ...item, admin_email: emails.get(item.admin_id) || item.admin_id })) })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/events', async (req, res, next) => {
   try {
     const allowed = ['page_view', 'onboarding_view', 'onboarding_start', 'template_select', 'login_prompt', 'generation_success', 'recharge_open', 'recharge_order']
@@ -822,6 +839,7 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
       p_reason: String(req.body.reason || '')
     })
     if (error) throw error
+    await auditAdmin(req, 'adjust_credits', 'user', req.params.id, { amount, balanceAfter: data, reason: String(req.body.reason || '') })
     res.json({ credits: data })
   } catch (error) { next(error) }
 })
@@ -1107,6 +1125,7 @@ app.post('/api/admin/recharge-orders/:id/review', requireUser, requireAdmin, asy
       const { error: referralError } = await supabaseAdmin().rpc('complete_referral_payment', { p_order_id: req.params.id })
       if (referralError) console.error('[referral-payment]', req.params.id, referralError.message)
     }
+    await auditAdmin(req, approve ? 'approve_recharge' : 'reject_recharge', 'recharge_order', req.params.id, { balanceAfter: data })
     res.json({ credits: data, status: approve ? 'paid' : 'rejected' })
   } catch (error) { next(error) }
 })
@@ -1125,6 +1144,7 @@ app.post('/api/admin/refunds/:id/review', requireUser, requireAdmin, async (req,
     const approve = req.body.approve === true; const adminNote = String(req.body.adminNote || '').trim().slice(0, 500)
     const { data, error } = await supabaseAdmin().rpc('admin_review_refund', { p_admin_id: req.user.id, p_refund_id: req.params.id, p_approve: approve, p_admin_note: adminNote || null })
     if (error) { if (error.message?.includes('INSUFFICIENT_REFUNDABLE_CREDITS')) { error.status = 409; error.message = '用户当前剩余算力不足，暂不能执行退款扣回' } throw error }
+    await auditAdmin(req, approve ? 'approve_refund' : 'reject_refund', 'refund_request', req.params.id, { balanceAfter: data, adminNote })
     res.json({ credits: data, status: approve ? 'approved' : 'rejected' })
   } catch (error) { next(error) }
 })

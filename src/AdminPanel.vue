@@ -110,6 +110,10 @@
         </div>
       </div>
     </section>
+    <section class="audit-card">
+      <div class="admin-section-title"><div><h3>管理员操作审计</h3><p>记录充值、退款和人工调整算力等关键操作，日志不可由前端修改</p></div><button @click="loadAuditLogs">刷新日志</button></div>
+      <div class="audit-table-wrap"><table><thead><tr><th>时间</th><th>管理员</th><th>操作</th><th>目标</th><th>详情</th><th>IP</th></tr></thead><tbody><tr v-for="item in auditLogs()" :key="item.id"><td>{{ formatDate(item.created_at) }}</td><td>{{ item.admin_email }}</td><td><b>{{ auditActionName(item.action) }}</b></td><td>{{ item.target_type }} · {{ item.target_id }}</td><td><code>{{ auditDetails(item.details) }}</code></td><td>{{ item.ip_address || '—' }}</td></tr><tr v-if="!auditLogs().length"><td colspan="6">暂无管理员操作记录</td></tr></tbody></table></div>
+    </section>
     <div ref="orderSection" class="admin-table-wrap recharge-admin" :class="{ 'has-pending': pendingOrderCount }">
       <div class="admin-section-title"><div><h3>充值订单 <em v-if="pendingOrderCount" class="pending-order-badge">{{ pendingOrderCount }} 条待审核</em></h3><p>确认收到款项后再批准，系统只会到账一次</p></div><button @click="loadOrders(false)">刷新订单</button></div>
       <table class="admin-table">
@@ -167,10 +171,14 @@ export default {
     uptimeText() { const seconds = Number(this.systemHealth.uptimeSeconds || 0); const days = Math.floor(seconds / 86400); const hours = Math.floor(seconds % 86400 / 3600); return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${Math.floor(seconds % 3600 / 60)} 分钟` },
     analyticsMargin() { const revenue = Number(this.analytics.metrics.netRevenueFen || 0); return revenue ? Math.round(Number(this.analytics.metrics.estimatedGrossProfitFen || 0) / revenue * 100) : 0 }
   },
-  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadContentSafety(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
+  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAuditLogs(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadContentSafety(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
+    auditLogs() { return this._auditLogs || [] },
+    auditActionName(action) { return ({ adjust_credits: '调整算力', approve_recharge: '确认充值到账', reject_recharge: '拒绝充值', approve_refund: '确认退款', reject_refund: '拒绝退款' })[action] || action },
+    auditDetails(details) { const value = JSON.stringify(details || {}); return value.length > 160 ? `${value.slice(0, 160)}…` : value },
+    async loadAuditLogs() { try { const response = await fetch('/api/admin/audit-logs', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取管理员审计日志失败'); this._auditLogs = data.logs || []; this.$forceUpdate() } catch (error) { this.errorMessage = error.message } },
     percent(value) { return `${(Number(value || 0) * 100).toFixed(1)}%` },
     analyticsActionName(action) { return ({ copy_generation: '电商文案', prompt_enhance: 'AI 润色', image_generation: '图片生成', image_edit: '图生图', gif_generation: 'GIF 动图', video_generation: '视频生成' })[action] || action },
     trendHeight(value, type) { const values = (this.analytics.trend || []).map(row => type === 'generation' ? Number(row.generations || 0) : Math.max(0, type === 'money' ? Number(row.revenueFen || 0) - Number(row.refundFen || 0) : Number(row.costFen || 0))); const max = Math.max(1, ...values); return Math.max(Number(value) > 0 ? 4 : 0, Math.round(Math.max(0, Number(value || 0)) / max * 100)) },
