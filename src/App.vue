@@ -1,7 +1,7 @@
 <template>
   <div class="app-shell">
     <aside class="sidebar" :class="{ open: menuOpen }">
-      <a class="brand" href="#" @click.prevent="go('image')"
+      <a class="brand" href="#" @click.prevent="go('home')"
         ><span class="brand-mark">✦</span><span>灵境 AI</span></a
       >
       <nav class="main-nav">
@@ -53,6 +53,28 @@
         </div>
       </header>
       <div v-if="session && credits <= 2" class="low-credit-banner"><span>当前仅剩 <b>{{ credits }}</b> 点算力，可能不足以完成下一次创作。</span><button @click="openRecharge">查看算力套餐</button></div>
+      <section v-if="page === 'home'" class="landing-view">
+        <div class="landing-hero">
+          <div class="landing-copy">
+            <span class="landing-tag">专为电商创作者打造</span>
+            <h2>一站生成文案、商品图<br />动图与营销视频</h2>
+            <p>不用学习复杂工具，从商品卖点到可发布素材，几分钟完成整套电商内容创作。</p>
+            <div class="landing-actions"><button class="landing-primary" @click="go('image')">免费开始创作</button><button @click="go('copy')">先生成电商文案</button></div>
+            <small>注册即送体验算力 · 使用生成能力时才需要登录</small>
+          </div>
+          <div class="landing-showcase">
+            <div class="showcase-main"><span>AI 商品视觉</span><b>让一张商品图<br />拥有更多可能</b><button @click="go('video')">让图片动起来 →</button></div>
+            <div class="showcase-chip copy-chip">高转化文案</div><div class="showcase-chip image-chip">商品主图</div><div class="showcase-chip video-chip">GIF / 视频</div>
+          </div>
+        </div>
+        <div class="landing-features">
+          <article><span>文</span><h3>电商文案</h3><p>根据商品卖点和投放平台，快速生成标题、卖点与营销正文。</p><button @click="go('copy')">立即体验</button></article>
+          <article><span>图</span><h3>图片生成与修改</h3><p>支持文字生成图片、多图合成和通过描述修改现有商品素材。</p><button @click="go('image')">立即体验</button></article>
+          <article><span>动</span><h3>GIF 与视频</h3><p>上传静态图片生成 GIF 动图，也可以直接用文字生成营销视频。</p><button @click="go('video')">立即体验</button></article>
+          <article><span>设</span><h3>电商画布</h3><p>拖拽商品图和营销文字，快速制作主图、海报与社媒封面。</p><button @click="go('canvas')">立即体验</button></article>
+        </div>
+        <div class="landing-bottom"><div><span>按需使用，更适合刚起步的商家</span><h3>先免费体验，满意后再获取更多算力</h3><p>生成失败自动退还算力，作品自动保存到云端。</p></div><button @click="openRecharge">查看算力套餐</button></div>
+      </section>
       <section v-if="page === 'copy'" class="copywriter-view">
         <div class="copy-form-card">
           <div class="copy-intro"><span>AI</span><div><b>电商文案生成器</b><small>填写商品信息，快速生成可直接使用的营销文案</small></div></div>
@@ -405,6 +427,7 @@ export default {
     const models = [{ name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型" }];
     return {
       nav: [
+        { id: "home", name: "产品首页", icon: "⌂" },
         { label: "创作" },
         { id: "copy", name: "电商文案", icon: "文", new: true },
         { id: "image", name: "图片生成", icon: "▧" },
@@ -415,6 +438,7 @@ export default {
         { id: "favorites", name: "我的收藏", icon: "♡" },
       ],
       pages: {
+        home: ["灵境 AI", "为电商商家提供一站式 AI 内容创作"],
         copy: ["电商文案", "为电商商品生成高转化营销内容"],
         image: ["图片生成", "把你的想象变成画面"],
         video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
@@ -460,7 +484,7 @@ export default {
       onboardingOpen: !localStorage.getItem('lingjing-onboarding-hidden'),
       hideOnboarding: false,
       anonymousId: localStorage.getItem('lingjing-anonymous-id') || (crypto.randomUUID ? crypto.randomUUID() : `anon-${Date.now()}-${Math.random().toString(36).slice(2)}`),
-      page: "image",
+      page: "home",
       mode: "text",
       prompt: "",
       copyProduct: "",
