@@ -233,7 +233,42 @@
           </div>
         </div>
       </section>
-      <section v-else-if="page !== 'copy'" class="placeholder-view">
+      <section v-else-if="page === 'canvas'" class="design-view">
+        <aside class="design-controls">
+          <div class="design-block">
+            <h3>画布尺寸</h3>
+            <div class="design-presets">
+              <button v-for="preset in designPresets" :key="preset.id" :class="{ active: designPreset === preset.id }" @click="selectDesignPreset(preset)"><b>{{ preset.name }}</b><small>{{ preset.width }} × {{ preset.height }}</small></button>
+            </div>
+          </div>
+          <div class="design-block">
+            <h3>商品图片</h3>
+            <label class="design-upload"><input type="file" accept="image/*" @change="uploadDesignProduct" /><span>＋ 上传商品图</span><small>上传后可在画布中拖动</small></label>
+            <div v-if="designProductImage" class="design-scale"><label>商品图大小 <b>{{ Math.round(designImageScale * 100) }}%</b></label><input v-model.number="designImageScale" type="range" min="0.15" max="1.2" step="0.01" @input="drawDesignCanvas" /><button @click="removeDesignProduct">移除商品图</button></div>
+          </div>
+          <div class="design-block">
+            <h3>营销文字</h3>
+            <input v-model="designTitle" maxlength="30" placeholder="商品标题，例如：夏日清凉上新" @input="drawDesignCanvas" />
+            <input v-model="designPrice" maxlength="16" placeholder="价格，例如：¥99 起" @input="drawDesignCanvas" />
+            <textarea v-model="designSellingPoint" maxlength="80" placeholder="核心卖点，例如：轻薄透气｜限时优惠" @input="drawDesignCanvas"></textarea>
+            <div class="design-color-row"><label>文字颜色 <input v-model="designTextColor" type="color" @input="drawDesignCanvas" /></label><label>背景颜色 <input v-model="designBackgroundColor" type="color" @input="clearDesignBackground" /></label></div>
+          </div>
+          <div class="design-block">
+            <h3>AI 商品背景 <small>消耗 2 算力</small></h3>
+            <textarea v-model="designBackgroundPrompt" maxlength="500" placeholder="例如：米白色高级摄影棚，柔和日光，简洁展台"></textarea>
+            <button class="design-ai-btn" :disabled="designBgLoading" @click="generateDesignBackground"><span v-if="designBgLoading" class="button-spinner"></span>{{ designBgLoading ? '背景生成中…' : '✦ 生成 AI 背景' }}</button>
+          </div>
+        </aside>
+        <div class="design-workspace">
+          <div class="design-stage-wrap">
+            <canvas ref="designCanvas" class="design-canvas" :width="designWidth" :height="designHeight" @mousedown="startDesignDrag" @mousemove="moveDesignDrag" @mouseup="endDesignDrag" @mouseleave="endDesignDrag" @touchstart.prevent="startDesignDrag" @touchmove.prevent="moveDesignDrag" @touchend="endDesignDrag"></canvas>
+          </div>
+          <p class="design-tip">提示：拖动商品图调整位置，使用左侧滑杆调整大小</p>
+          <p v-if="designMessage" class="design-message" :class="{ error: designError }">{{ designMessage }}</p>
+          <div class="design-actions"><button @click="saveDesignDraft">保存草稿</button><button @click="resetDesign">清空画布</button><button class="primary" @click="exportDesign">↓ 导出 PNG</button></div>
+        </div>
+      </section>
+      <section v-else-if="page !== 'copy' && page !== 'canvas'" class="placeholder-view">
         <div class="placeholder-icon">✦</div>
         <h2>{{ pages[page][0] }}</h2>
         <p>完整功能即将上线，敬请期待。</p>
@@ -318,7 +353,7 @@ export default {
         { id: "copy", name: "电商文案", icon: "文", new: true },
         { id: "image", name: "图片生成", icon: "▧" },
         { id: "video", name: "视频生成", icon: "▷", new: true },
-        { id: "canvas", name: "AI 画布", icon: "⌘" },
+        { id: "canvas", name: "电商设计", icon: "⌘", new: true },
         { label: "资产" },
         { id: "works", name: "我的作品", icon: "◫" },
         { id: "favorites", name: "我的收藏", icon: "♡" },
@@ -327,7 +362,7 @@ export default {
         copy: ["电商文案", "为电商商品生成高转化营销内容"],
         image: ["图片生成", "把你的想象变成画面"],
         video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
-        canvas: ["AI 画布", "无限空间，自由创作"],
+        canvas: ["电商设计", "快速制作商品主图与营销海报"],
         works: ["我的作品", "管理你的创作资产"],
         favorites: ["我的收藏", "灵感随时回看"],
       },
@@ -407,6 +442,33 @@ export default {
       supportDraft: "",
       supportError: "",
       supportTimer: null,
+      designPresets: [
+        { id: 'taobao', name: '淘宝主图', width: 800, height: 800 },
+        { id: 'redbook', name: '小红书封面', width: 900, height: 1200 },
+        { id: 'douyin', name: '抖音竖图', width: 1080, height: 1440 },
+        { id: 'banner', name: '横版海报', width: 1200, height: 628 },
+      ],
+      designPreset: 'taobao',
+      designWidth: 800,
+      designHeight: 800,
+      designTitle: '好物焕新季',
+      designPrice: '¥99 起',
+      designSellingPoint: '品质甄选｜限时优惠',
+      designTextColor: '#171821',
+      designBackgroundColor: '#f4efe8',
+      designBackgroundPrompt: '',
+      designProductImage: null,
+      designProductSource: '',
+      designBackgroundImage: null,
+      designBackgroundSource: '',
+      designImageScale: 0.62,
+      designImageX: 0.5,
+      designImageY: 0.59,
+      designImageRect: null,
+      designDragging: false,
+      designBgLoading: false,
+      designMessage: '',
+      designError: false,
     };
   },
   computed: {
@@ -454,6 +516,7 @@ export default {
     },
   },
   async mounted() {
+    this.loadDesignDraft()
     if (!supabaseConfigured) { this.authReady = true; return }
     const { data } = await supabase.auth.getSession()
     this.session = data.session
@@ -600,6 +663,126 @@ export default {
       this.page = p;
       this.mode = 'text';
       this.menuOpen = false;
+      if (p === 'canvas') this.$nextTick(this.drawDesignCanvas);
+    },
+    selectDesignPreset(preset) {
+      this.designPreset = preset.id;
+      this.designWidth = preset.width;
+      this.designHeight = preset.height;
+      this.$nextTick(this.drawDesignCanvas);
+    },
+    loadDesignImage(source) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        if (/^https?:/i.test(source)) image.crossOrigin = 'anonymous';
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('图片读取失败，请更换图片后重试'));
+        image.src = source;
+      });
+    },
+    async uploadDesignProduct(event) {
+      const file = event.target.files?.[0]; event.target.value = '';
+      if (!file) return;
+      if (file.size > 8 * 1024 * 1024) { this.designMessage = '商品图片不能超过 8MB'; this.designError = true; return; }
+      try {
+        const source = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
+        this.designProductImage = await this.loadDesignImage(source);
+        this.designProductSource = source;
+        this.designImageX = 0.5; this.designImageY = 0.59; this.designImageScale = 0.62;
+        this.designMessage = ''; this.designError = false; this.drawDesignCanvas();
+      } catch (error) { this.designMessage = error.message || '商品图片读取失败'; this.designError = true; }
+    },
+    removeDesignProduct() {
+      this.designProductImage = null; this.designProductSource = ''; this.designImageRect = null; this.drawDesignCanvas();
+    },
+    clearDesignBackground() {
+      this.designBackgroundImage = null; this.designBackgroundSource = ''; this.drawDesignCanvas();
+    },
+    drawCover(ctx, image, width, height) {
+      const scale = Math.max(width / image.width, height / image.height);
+      const w = image.width * scale; const h = image.height * scale;
+      ctx.drawImage(image, (width - w) / 2, (height - h) / 2, w, h);
+    },
+    drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 2) {
+      const chars = Array.from(text || ''); let line = ''; let lineIndex = 0;
+      for (let index = 0; index < chars.length; index += 1) {
+        const test = line + chars[index];
+        if (ctx.measureText(test).width > maxWidth && line) {
+          ctx.fillText(line, x, y + lineIndex * lineHeight); line = chars[index]; lineIndex += 1;
+          if (lineIndex >= maxLines) break;
+        } else line = test;
+      }
+      if (line && lineIndex < maxLines) ctx.fillText(line, x, y + lineIndex * lineHeight);
+    },
+    drawDesignCanvas() {
+      const canvas = this.$refs.designCanvas; if (!canvas) return;
+      const ctx = canvas.getContext('2d'); const w = canvas.width; const h = canvas.height;
+      ctx.clearRect(0, 0, w, h); ctx.fillStyle = this.designBackgroundColor; ctx.fillRect(0, 0, w, h);
+      if (this.designBackgroundImage) this.drawCover(ctx, this.designBackgroundImage, w, h);
+      const shade = ctx.createLinearGradient(0, 0, 0, h * 0.5); shade.addColorStop(0, 'rgba(255,255,255,.72)'); shade.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = shade; ctx.fillRect(0, 0, w, h * 0.55);
+      if (this.designProductImage) {
+        const image = this.designProductImage; const maxW = w * this.designImageScale; const maxH = h * this.designImageScale;
+        const scale = Math.min(maxW / image.width, maxH / image.height); const imageW = image.width * scale; const imageH = image.height * scale;
+        const x = this.designImageX * w - imageW / 2; const y = this.designImageY * h - imageH / 2;
+        ctx.shadowColor = 'rgba(20,20,30,.22)'; ctx.shadowBlur = Math.round(w * 0.025); ctx.shadowOffsetY = Math.round(w * 0.012); ctx.drawImage(image, x, y, imageW, imageH); ctx.shadowColor = 'transparent';
+        this.designImageRect = { x, y, width: imageW, height: imageH };
+      } else this.designImageRect = null;
+      const left = w * 0.065; ctx.textBaseline = 'top'; ctx.fillStyle = this.designTextColor;
+      ctx.font = `800 ${Math.round(w * 0.075)}px system-ui, sans-serif`; this.drawWrappedText(ctx, this.designTitle, left, h * 0.07, w * 0.87, w * 0.087, 2);
+      ctx.fillStyle = '#ff3d57'; ctx.font = `900 ${Math.round(w * 0.065)}px system-ui, sans-serif`; ctx.fillText(this.designPrice, left, h * 0.245);
+      ctx.fillStyle = this.designTextColor; ctx.globalAlpha = 0.78; ctx.font = `600 ${Math.round(w * 0.03)}px system-ui, sans-serif`; this.drawWrappedText(ctx, this.designSellingPoint, left, h * 0.335, w * 0.87, w * 0.043, 2); ctx.globalAlpha = 1;
+    },
+    designPointer(event) {
+      const canvas = this.$refs.designCanvas; const rect = canvas.getBoundingClientRect(); const point = event.touches?.[0] || event.changedTouches?.[0] || event;
+      return { x: (point.clientX - rect.left) * canvas.width / rect.width, y: (point.clientY - rect.top) * canvas.height / rect.height };
+    },
+    startDesignDrag(event) {
+      if (!this.designImageRect) return; const point = this.designPointer(event); const rect = this.designImageRect;
+      this.designDragging = point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+    },
+    moveDesignDrag(event) {
+      if (!this.designDragging) return; const point = this.designPointer(event);
+      this.designImageX = Math.max(0, Math.min(1, point.x / this.designWidth)); this.designImageY = Math.max(0, Math.min(1, point.y / this.designHeight)); this.drawDesignCanvas();
+    },
+    endDesignDrag() { this.designDragging = false; },
+    async generateDesignBackground() {
+      if (this.designBgLoading) return;
+      if (!this.session) { this.requestLogin('请先登录后生成 AI 商品背景'); return; }
+      if (!this.designBackgroundPrompt.trim()) { this.designMessage = '请先描述想要的商品背景'; this.designError = true; return; }
+      if (this.credits < 2) { this.designMessage = '算力不足，生成背景需要 2 点算力'; this.designError = true; return; }
+      this.designBgLoading = true; this.designMessage = ''; this.designError = false;
+      try {
+        const ratio = this.designWidth > this.designHeight ? '16:9' : (this.designWidth < this.designHeight ? '3:4' : '1:1');
+        const response = await fetch('/api/images/generate', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prompt: `${this.designBackgroundPrompt.trim()}。纯净电商摄影背景，预留商品摆放空间，不出现商品、人物、文字、标志和水印`, ratio, count: 1 }) });
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI 背景生成失败');
+        this.designBackgroundSource = data.images?.[0] || ''; this.designBackgroundImage = await this.loadDesignImage(this.designBackgroundSource);
+        if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
+        this.designMessage = 'AI 背景已生成并应用'; this.drawDesignCanvas();
+      } catch (error) { this.designMessage = error.message; this.designError = true; }
+      finally { this.designBgLoading = false; }
+    },
+    saveDesignDraft() {
+      try {
+        localStorage.setItem('lingjing-design-draft', JSON.stringify({ preset: this.designPreset, width: this.designWidth, height: this.designHeight, title: this.designTitle, price: this.designPrice, sellingPoint: this.designSellingPoint, textColor: this.designTextColor, backgroundColor: this.designBackgroundColor, backgroundPrompt: this.designBackgroundPrompt, productSource: this.designProductSource, backgroundSource: this.designBackgroundSource, imageScale: this.designImageScale, imageX: this.designImageX, imageY: this.designImageY }));
+        this.designMessage = '草稿已保存在当前浏览器'; this.designError = false;
+      } catch (_error) { this.designMessage = '商品图较大，浏览器空间不足，请先导出成品'; this.designError = true; }
+    },
+    async loadDesignDraft() {
+      try {
+        const draft = JSON.parse(localStorage.getItem('lingjing-design-draft') || 'null'); if (!draft) return;
+        this.designPreset = draft.preset || 'taobao'; this.designWidth = draft.width || 800; this.designHeight = draft.height || 800; this.designTitle = draft.title || ''; this.designPrice = draft.price || ''; this.designSellingPoint = draft.sellingPoint || ''; this.designTextColor = draft.textColor || '#171821'; this.designBackgroundColor = draft.backgroundColor || '#f4efe8'; this.designBackgroundPrompt = draft.backgroundPrompt || ''; this.designImageScale = draft.imageScale || 0.62; this.designImageX = draft.imageX ?? 0.5; this.designImageY = draft.imageY ?? 0.59;
+        if (draft.productSource) { this.designProductSource = draft.productSource; this.designProductImage = await this.loadDesignImage(draft.productSource); }
+        if (draft.backgroundSource) { this.designBackgroundSource = draft.backgroundSource; this.designBackgroundImage = await this.loadDesignImage(draft.backgroundSource); }
+      } catch (_error) { localStorage.removeItem('lingjing-design-draft'); }
+    },
+    resetDesign() {
+      if (!window.confirm('确定清空当前画布吗？')) return;
+      this.designTitle = ''; this.designPrice = ''; this.designSellingPoint = ''; this.designProductImage = null; this.designProductSource = ''; this.designBackgroundImage = null; this.designBackgroundSource = ''; this.designBackgroundColor = '#f4efe8'; this.designMessage = ''; localStorage.removeItem('lingjing-design-draft'); this.drawDesignCanvas();
+    },
+    exportDesign() {
+      const canvas = this.$refs.designCanvas; if (!canvas) return;
+      try { const link = document.createElement('a'); link.download = `lingjing-design-${Date.now()}.png`; link.href = canvas.toDataURL('image/png'); link.click(); this.designMessage = 'PNG 已导出'; this.designError = false; }
+      catch (_error) { this.designMessage = '背景图片暂不允许跨域导出，请重新生成或使用纯色背景'; this.designError = true; }
     },
     selectVideoMode(mode) {
       this.videoMode = mode;
