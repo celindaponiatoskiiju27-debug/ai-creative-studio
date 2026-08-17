@@ -498,6 +498,39 @@ app.get('/api/me', requireUser, async (req, res, next) => {
   try { res.json({ user: await profileFor(req.user.id) }) } catch (error) { next(error) }
 })
 
+app.get('/api/me/export', requireUser, async (req, res, next) => {
+  try {
+    const userId = req.user.id
+    const queries = {
+      profile: supabaseAdmin().from('profiles').select('id,email,credits,is_admin,created_at').eq('id', userId).single(),
+      usageRecords: supabaseAdmin().from('usage_records').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      favorites: supabaseAdmin().from('favorites').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      rechargeOrders: supabaseAdmin().from('recharge_orders').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      creditTransactions: supabaseAdmin().from('credit_transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      refunds: supabaseAdmin().from('refund_requests').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      consents: supabaseAdmin().from('user_consents').select('*').eq('user_id', userId).order('accepted_at', { ascending: false }),
+      referrals: supabaseAdmin().from('referrals').select('*').or(`inviter_id.eq.${userId},invitee_id.eq.${userId}`).order('created_at', { ascending: false }),
+      supportConversations: supabaseAdmin().from('support_conversations').select('*').eq('user_id', userId).order('created_at', { ascending: false })
+    }
+    const entries = await Promise.all(Object.entries(queries).map(async ([key, query]) => {
+      const { data, error } = await query
+      if (error && error.code !== '42P01') throw error
+      return [key, data || (key === 'profile' ? null : [])]
+    }))
+    const exported = Object.fromEntries(entries)
+    const conversationIds = (exported.supportConversations || []).map(item => item.id)
+    exported.supportMessages = []
+    if (conversationIds.length) {
+      const { data, error } = await supabaseAdmin().from('support_messages').select('*').in('conversation_id', conversationIds).order('created_at')
+      if (error && error.code !== '42P01') throw error
+      exported.supportMessages = data || []
+    }
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="lingjing-account-${new Date().toISOString().slice(0, 10)}.json"`)
+    res.send(JSON.stringify({ exportedAt: new Date().toISOString(), formatVersion: 1, account: exported }, null, 2))
+  } catch (error) { next(error) }
+})
+
 app.get('/api/usage', requireUser, async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin().from('usage_records').select('id,action,image_count,credits,status,prompt,output_urls,output_text,ai_generated,ai_label,ai_label_version,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(50)
