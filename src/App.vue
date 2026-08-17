@@ -300,6 +300,15 @@
           <div class="design-actions"><button @click="saveDesignDraft">保存草稿</button><button @click="resetDesign">清空画布</button><button class="primary" @click="exportDesign">↓ 导出 PNG</button></div>
         </div>
       </section>
+      <section v-else-if="page === 'community'" class="community-view">
+        <div class="community-hero"><div><span>COMMUNITY</span><h2>灵感广场</h2><p>浏览用户主动公开的电商作品，收藏灵感或一键生成同款。</p></div><button v-if="session" @click="go('works')">发布我的作品</button></div>
+        <div class="community-toolbar"><div><button v-for="category in communityCategories" :key="category" :class="{ active: communityCategory === category }" @click="communityCategory = category; loadCommunity()">{{ category }}</button></div><select v-model="communitySort" @change="loadCommunity"><option value="latest">最新发布</option><option value="popular">热门收藏</option></select></div>
+        <div class="community-notice">作品均由用户主动发布。参考作品前请尊重作者设置，严禁用于侵权、欺诈或其他违法用途。</div>
+        <div v-if="communityLoading" class="asset-state"><div class="loader"><i /><i /><i /></div><h3>正在加载灵感作品</h3></div>
+        <div v-else-if="communityError" class="asset-state error"><h3>读取失败</h3><p>{{ communityError }}</p><button @click="loadCommunity">重新加载</button></div>
+        <div v-else-if="communityPosts.length" class="community-grid"><article v-for="post in communityPosts" :key="post.id"><div class="community-media"><video v-if="post.media_type === 'video'" :src="post.asset_url" controls preload="metadata" /><img v-else :src="post.asset_url" :alt="post.title" loading="lazy" /><span>{{ post.media_type === 'video' ? '视频' : (post.media_type === 'gif' ? 'GIF' : '图片') }}</span></div><div class="community-card-body"><h3>{{ post.title }}</h3><p><b>{{ post.author }}</b><span>{{ post.category }}</span></p><blockquote v-if="post.prompt">{{ post.prompt }}</blockquote><blockquote v-else>{{ post.prompt_visibility === 'hidden' ? '作者未公开提示词' : '点击生成同款后获取参考提示词' }}</blockquote><div><button :class="{ liked: post.favorited }" @click="favoriteCommunityPost(post)">♡ {{ post.favorite_count }}</button><button class="remix" @click="remixCommunityPost(post)">生成同款 · {{ post.remix_count }}</button><button class="report" @click="reportCommunityPost(post)">举报</button></div></div></article></div>
+        <div v-else class="asset-state"><div class="placeholder-icon">◎</div><h3>这个分类还没有公开作品</h3><p>发布第一件作品，审核通过后会展示在这里。</p><button @click="go('works')">选择我的作品</button></div>
+      </section>
       <section v-else-if="page === 'works' || page === 'favorites'" class="asset-view">
         <div class="asset-toolbar">
           <div><h2>{{ page === 'works' ? '我的作品' : '我的收藏' }}</h2><p>{{ page === 'works' ? '云端保存最近生成的内容，随时查看和下载' : '收藏喜欢的作品，登录后可跨设备查看' }}</p></div>
@@ -319,6 +328,7 @@
             </div>
             <div class="asset-info"><p>{{ item.prompt || (item.type === 'text' ? '电商文案' : '未记录描述') }}</p><small>{{ formatHistoryDate(item.createdAt) }}</small></div>
             <div class="asset-actions">
+              <button v-if="page === 'works' && item.type !== 'text'" class="publish-community" @click="publishToCommunity(item)">发布到广场</button>
               <button v-if="item.type === 'text'" @click="copyAssetText(item)">{{ copiedAssetId === item.id ? '已复制' : '复制文案' }}</button>
               <button v-else @click="downloadAsset(item, index)">↓ 下载</button>
               <button v-if="item.type !== 'text'" :class="{ liked: isFavorite(item.url) }" @click="toggleFavorite(item.url, item.type, item.prompt)">{{ isFavorite(item.url) ? '♥ 取消收藏' : '♡ 收藏' }}</button>
@@ -438,6 +448,7 @@ export default {
         { id: "image", name: "图片生成", icon: "▧" },
         { id: "video", name: "视频生成", icon: "▷", new: true },
         { id: "canvas", name: "电商设计", icon: "⌘", new: true },
+        { id: "community", name: "灵感广场", icon: "◎", new: true },
         { label: "资产" },
         { id: "works", name: "我的作品", icon: "◫" },
         { id: "favorites", name: "我的收藏", icon: "♡" },
@@ -448,6 +459,7 @@ export default {
         image: ["图片生成", "把你的想象变成画面"],
         video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
         canvas: ["电商设计", "快速制作商品主图与营销海报"],
+        community: ["灵感广场", "浏览真实作品，参考提示词并生成同款"],
         works: ["我的作品", "管理你的创作资产"],
         favorites: ["我的收藏", "灵感随时回看"],
       },
@@ -555,6 +567,12 @@ export default {
       supportMessages: [],
       supportDraft: "",
       supportError: "",
+      communityPosts: [],
+      communityLoading: false,
+      communityError: "",
+      communityCategory: "全部",
+      communitySort: "latest",
+      communityCategories: ["全部", "美妆", "服装", "食品", "家居", "数码", "其他"],
       supportTimer: null,
       inviteOpen: false,
       inviteLoading: false,
@@ -645,7 +663,7 @@ export default {
       const items = [];
       this.historyRecords.filter(record => record.status === 'completed' && record.action !== 'prompt_enhance').forEach(record => {
         if (record.output_text) items.push({ id: `${record.id}-text`, type: 'text', text: record.output_text, prompt: record.prompt, createdAt: record.created_at });
-        (record.output_urls || []).forEach((url, index) => items.push({ id: `${record.id}-${index}`, url, type: record.action === 'video_generation' ? 'video' : (record.action === 'gif_generation' ? 'gif' : 'image'), prompt: record.prompt, createdAt: record.created_at }));
+        (record.output_urls || []).forEach((url, index) => items.push({ id: `${record.id}-${index}`, usageId: record.id, url, type: record.action === 'video_generation' ? 'video' : (record.action === 'gif_generation' ? 'gif' : 'image'), prompt: record.prompt, createdAt: record.created_at }));
       });
       return items;
     },
@@ -876,6 +894,7 @@ export default {
       this.menuOpen = false;
       if (p === 'canvas') this.$nextTick(this.drawDesignCanvas);
       if (['works', 'favorites'].includes(p)) { this.assetFilter = 'all'; this.loadAssetPage(p); }
+      if (p === 'community') this.loadCommunity();
     },
     selectDesignPreset(preset) {
       this.designPreset = preset.id;
@@ -1072,6 +1091,35 @@ export default {
       this.referenceImages.forEach(item => URL.revokeObjectURL(item.url));
       this.referenceImages = [];
       this.errorMessage = "";
+    },
+    async loadCommunity() {
+      this.communityLoading = true; this.communityError = '';
+      try { const response = await fetch(`/api/community/posts?category=${encodeURIComponent(this.communityCategory)}&sort=${this.communitySort}`, { headers: this.authHeaders() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取灵感广场失败'); this.communityPosts = data.posts || [] }
+      catch (error) { this.communityError = error.message }
+      finally { this.communityLoading = false }
+    },
+    async publishToCommunity(item) {
+      const title = window.prompt('请填写作品标题：', (item.prompt || '我的电商创意作品').slice(0,40)); if (!title) return
+      const category = window.prompt('请选择分类：美妆、服装、食品、家居、数码、其他', '其他') || '其他'
+      const visibilityInput = window.prompt('提示词公开方式：输入 1 完全公开，2 仅生成同款可用，3 不公开', '1'); const promptVisibility = visibilityInput === '2' ? 'remix_only' : (visibilityInput === '3' ? 'hidden' : 'full')
+      if (!window.confirm('发布后所有用户都能看到该作品。确认你拥有素材使用权且内容不包含隐私信息吗？')) return
+      try { const response = await fetch('/api/community/posts', { method: 'POST', headers: this.authHeaders({ 'Content-Type':'application/json' }), body: JSON.stringify({ usageId:item.usageId, assetUrl:item.url, mediaType:item.type, title, category, promptVisibility }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '发布失败'); window.alert(data.message) }
+      catch (error) { this.assetError = error.message }
+    },
+    async favoriteCommunityPost(post) {
+      if (!this.session) { this.requestLogin('请先登录后收藏社区作品'); return }
+      try { const response = await fetch(`/api/community/posts/${post.id}/favorite`, { method:'POST', headers:this.authHeaders() }); const data=await response.json(); if(!response.ok) throw new Error(data.error || '收藏失败'); post.favorited=data.favorited; post.favorite_count=data.favoriteCount }
+      catch(error){ this.communityError=error.message }
+    },
+    async remixCommunityPost(post) {
+      if (!this.session) { this.requestLogin('请先登录后生成同款'); return }
+      try { const response=await fetch(`/api/community/posts/${post.id}/remix`,{method:'POST',headers:this.authHeaders()}); const data=await response.json(); if(!response.ok) throw new Error(data.error || '读取同款参数失败'); if(!data.prompt){ window.alert('作者未公开提示词，你可以参考画面自行描述。'); return } this.prompt=data.prompt; this.go(data.mediaType === 'video' ? 'video' : 'image') }
+      catch(error){ this.communityError=error.message }
+    },
+    async reportCommunityPost(post) {
+      if (!this.session) { this.requestLogin('请先登录后举报'); return } const reason=window.prompt('请填写举报原因：'); if(!reason) return
+      try { const response=await fetch(`/api/community/posts/${post.id}/report`,{method:'POST',headers:this.authHeaders({'Content-Type':'application/json'}),body:JSON.stringify({reason})}); const data=await response.json(); if(!response.ok) throw new Error(data.error || '举报失败'); window.alert(data.message) }
+      catch(error){ this.communityError=error.message }
     },
     isFavorite(url) { return this.favorites.some(item => item.asset_url === url); },
     async toggleFavorite(assetUrl, mediaType = 'image', prompt = '') {

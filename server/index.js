@@ -919,6 +919,62 @@ app.patch('/api/admin/referral-settings', requireUser, requireAdmin, async (req,
   } catch (error) { next(error) }
 })
 
+app.get('/api/community/posts', async (req, res, next) => {
+  try {
+    const category = String(req.query.category || '').trim(); const sort = req.query.sort === 'popular' ? 'popular' : 'latest'
+    let query = supabaseAdmin().from('community_posts').select('id,user_id,asset_url,media_type,title,category,prompt_visibility,prompt,view_count,favorite_count,remix_count,created_at').eq('status', 'approved').limit(60)
+    if (category && category !== '全部') query = query.eq('category', category)
+    query = sort === 'popular' ? query.order('favorite_count', { ascending: false }).order('created_at', { ascending: false }) : query.order('created_at', { ascending: false })
+    const { data, error } = await query; if (error) throw error
+    const userIds = [...new Set((data || []).map(item => item.user_id))]; const { data: users } = userIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', userIds) : { data: [] }; const emails = new Map((users || []).map(item => [item.id,item.email]))
+    let viewerId = ''; const token = req.headers.authorization?.replace(/^Bearer\s+/i, ''); if (token) { const auth = await supabaseAdmin().auth.getUser(token); viewerId = auth.data.user?.id || '' }
+    const postIds = (data || []).map(item => item.id); const { data: favorites } = viewerId && postIds.length ? await supabaseAdmin().from('community_favorites').select('post_id').eq('user_id', viewerId).in('post_id', postIds) : { data: [] }; const favoriteIds = new Set((favorites || []).map(item => item.post_id))
+    res.json({ posts: (data || []).map(item => ({ ...item, prompt: item.prompt_visibility === 'full' ? item.prompt : '', author: (emails.get(item.user_id) || '用户').split('@')[0], favorited: favoriteIds.has(item.id) })) })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/community/posts', requireUser, async (req, res, next) => {
+  try {
+    const usageId = String(req.body.usageId || ''); const assetUrl = String(req.body.assetUrl || '').trim(); const title = String(req.body.title || '').trim().slice(0,80); const mediaType = String(req.body.mediaType || 'image'); const category = String(req.body.category || '其他').trim().slice(0,30); const promptVisibility = ['full','remix_only','hidden'].includes(req.body.promptVisibility) ? req.body.promptVisibility : 'full'
+    if (!usageId || !assetUrl || !title || !['image','gif','video'].includes(mediaType)) return res.status(400).json({ error: '请完整填写发布信息' })
+    const { data: usage, error: usageError } = await supabaseAdmin().from('usage_records').select('id,user_id,status,prompt,output_urls').eq('id', usageId).eq('user_id', req.user.id).single(); if (usageError) throw usageError
+    if (usage.status !== 'completed' || !(usage.output_urls || []).includes(assetUrl)) return res.status(403).json({ error: '只能发布你在本站成功生成的作品' })
+    const { data, error } = await supabaseAdmin().from('community_posts').insert({ user_id: req.user.id, usage_id: usage.id, asset_url: assetUrl, media_type: mediaType, title, category, prompt_visibility: promptVisibility, prompt: usage.prompt, status: 'pending' }).select('*').single(); if (error) throw error
+    res.json({ post: data, message: '作品已提交，审核通过后将在灵感广场展示' })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/community/posts/:id/favorite', requireUser, async (req, res, next) => {
+  try {
+    const existing = await supabaseAdmin().from('community_favorites').select('post_id').eq('post_id', req.params.id).eq('user_id', req.user.id).maybeSingle(); let favorited
+    if (existing.data) { const { error } = await supabaseAdmin().from('community_favorites').delete().eq('post_id', req.params.id).eq('user_id', req.user.id); if (error) throw error; favorited = false } else { const { error } = await supabaseAdmin().from('community_favorites').insert({ post_id: req.params.id, user_id: req.user.id }); if (error) throw error; favorited = true }
+    const { count, error: countError } = await supabaseAdmin().from('community_favorites').select('post_id', { count: 'exact', head: true }).eq('post_id', req.params.id); if (countError) throw countError
+    await supabaseAdmin().from('community_posts').update({ favorite_count: count || 0, updated_at: new Date().toISOString() }).eq('id', req.params.id)
+    res.json({ favorited, favoriteCount: count || 0 })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/community/posts/:id/remix', requireUser, async (req, res, next) => {
+  try {
+    const { data: post, error } = await supabaseAdmin().from('community_posts').select('id,prompt,prompt_visibility,media_type').eq('id', req.params.id).eq('status','approved').single(); if (error) throw error
+    await supabaseAdmin().from('community_remixes').upsert({ post_id: post.id, user_id: req.user.id }, { onConflict: 'post_id,user_id', ignoreDuplicates: true })
+    const { count } = await supabaseAdmin().from('community_remixes').select('post_id', { count: 'exact', head: true }).eq('post_id', post.id); await supabaseAdmin().from('community_posts').update({ remix_count: count || 0 }).eq('id', post.id)
+    res.json({ prompt: post.prompt_visibility === 'hidden' ? '' : post.prompt, mediaType: post.media_type })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/community/posts/:id/report', requireUser, async (req, res, next) => {
+  try { const reason = String(req.body.reason || '').trim().slice(0,500); if (!reason) return res.status(400).json({ error: '请填写举报原因' }); const { error } = await supabaseAdmin().from('community_reports').upsert({ post_id: req.params.id, user_id: req.user.id, reason, status: 'pending' }, { onConflict: 'post_id,user_id' }); if (error) throw error; res.json({ message: '举报已提交，管理员会尽快处理' }) } catch (error) { next(error) }
+})
+
+app.get('/api/admin/community', requireUser, requireAdmin, async (_req, res, next) => {
+  try { const { data: posts, error } = await supabaseAdmin().from('community_posts').select('*').order('created_at', { ascending: false }).limit(200); if (error) throw error; const ids = [...new Set((posts || []).map(item => item.user_id))]; const { data: users } = ids.length ? await supabaseAdmin().from('profiles').select('id,email').in('id',ids) : { data: [] }; const emails = new Map((users || []).map(item => [item.id,item.email])); const { data: reports } = await supabaseAdmin().from('community_reports').select('id,post_id,reason,status,created_at').eq('status','pending').order('created_at',{ascending:false}); res.json({ posts: (posts || []).map(item => ({...item,email:emails.get(item.user_id)||''})), reports: reports || [] }) } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/community/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try { const status = ['approved','rejected','removed'].includes(req.body.status) ? req.body.status : ''; if (!status) return res.status(400).json({ error:'无效审核状态' }); const values = { status, review_reason: String(req.body.reason || '').slice(0,500) || null, reviewed_by:req.user.id, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString() }; const { data,error } = await supabaseAdmin().from('community_posts').update(values).eq('id',req.params.id).select('*').single(); if(error) throw error; await supabaseAdmin().from('community_reports').update({status:'resolved'}).eq('post_id',req.params.id).eq('status','pending'); await auditAdmin(req,'review_community_post','community_post',req.params.id,{status,reason:values.review_reason}); res.json({post:data}) } catch(error){next(error)}
+})
+
 app.get('/api/favorites', requireUser, async (req, res, next) => {
   try {
     const { data, error } = await supabaseAdmin().from('favorites').select('id,asset_url,media_type,prompt,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(200)
