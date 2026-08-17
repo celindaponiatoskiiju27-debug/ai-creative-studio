@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
 
 const app = express()
+app.disable('x-powered-by')
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const port = Number(process.env.PORT || 3001)
 const upload = multer({
@@ -22,6 +23,13 @@ const upload = multer({
 })
 
 app.use(cors({ origin: ['http://localhost:5174', 'http://127.0.0.1:5174'] }))
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  next()
+})
 app.use(express.json({ limit: '1mb' }))
 
 const CREDIT_PRICES = Object.freeze({ copy: 1, enhance: 1, image: 2, imageEdit: 3, gif: 6, video: 25 })
