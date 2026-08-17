@@ -3,7 +3,7 @@
     <div v-if="orderAlert" class="order-alert"><div><strong>🔔 {{ orderAlert }}</strong><span>请核对付款单号与截图后再确认到账</span></div><button @click="scrollToOrders">立即查看</button><button class="close" @click="orderAlert = ''">×</button></div>
     <aside class="admin-side-nav">
       <div class="admin-side-title"><b>管理后台</b><span>ADMIN CONSOLE</span></div>
-      <button v-for="item in adminNavItems" :key="item.id" :class="{ active: adminActiveSection === item.id }" @click="adminActiveSection = item.id"><span>{{ item.icon }}</span><em>{{ item.name }}</em><i v-if="item.id === 'billing' && pendingOrderCount">{{ pendingOrderCount }}</i></button>
+      <button v-for="item in adminNavItems" :key="item.id" :class="{ active: adminActiveSection === item.id }" @click="switchAdminSection(item.id)"><span>{{ item.icon }}</span><em>{{ item.name }}</em><i v-if="item.id === 'billing' && pendingOrderCount">{{ pendingOrderCount }}</i></button>
     </aside>
     <main class="admin-page-content">
     <div v-show="adminActiveSection === 'users'" class="admin-heading">
@@ -178,7 +178,7 @@ export default {
   data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, analyticsDays: 30, analyticsLoading: false, analytics: { metrics: {}, byAction: [], trend: [], freshness: null }, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', lifecycleSettings: { generated_asset_days: 90, closed_support_days: 365, last_cleanup_at: null }, lifecyclePreview: { assetRecords: 0, assetFiles: 0, closedSupport: 0 }, lifecycleSaving: false, lifecycleCleaning: false, lifecycleExporting: false, safetySettings: { active: true, custom_blocked_terms: [] }, safetyTermsText: '', safetySaving: false, moderationEvents: [], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     adminNavItems() { return [{ id: 'overview', icon: '⌂', name: '数据概览' }, { id: 'users', icon: '♙', name: '用户管理' }, { id: 'billing', icon: '¥', name: '充值与套餐' }, { id: 'growth', icon: '↗', name: '邀请增长' }, { id: 'support', icon: '☏', name: '人工客服' }, { id: 'cost', icon: '◫', name: '成本控制' }, { id: 'risk', icon: '!', name: '内容风控' }, { id: 'system', icon: '⚙', name: '系统与审计' }] },
-    adminActiveSection: { get() { return this._adminActiveSection || 'overview' }, set(value) { this._adminActiveSection = value; this.$forceUpdate() } },
+    adminActiveSection() { return this.adjustments._adminTab || 'overview' },
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
     selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) },
@@ -191,6 +191,7 @@ export default {
   mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAuditLogs(); this.loadGenerationFeedback(); this.loadAnnouncement(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadContentSafety(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
+    switchAdminSection(section) { this.$set(this.adjustments, '_adminTab', section); window.scrollTo({ top: 0, behavior: 'smooth' }) },
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
     announcementInput(value) { if (!value) return ''; const date = new Date(value); return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16) },
     async loadAnnouncement() { try { const response = await fetch('/api/admin/site-announcement', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取全站公告失败'); data.announcement.starts_at = this.announcementInput(data.announcement.starts_at); data.announcement.ends_at = this.announcementInput(data.announcement.ends_at); this.$set(this.$data, 'adminAnnouncement', data.announcement); this.$set(this.$data, 'announcementSaving', false) } catch (error) { this.errorMessage = error.message } },
@@ -330,7 +331,7 @@ export default {
       if (this.notificationPermission === 'granted') { const first = orders[0]; new Notification('灵境 AI：收到新充值订单', { body: `${first.email || '用户'} 提交 ¥${(first.amount_fen / 100).toFixed(2)} 充值${orders.length > 1 ? `，另有 ${orders.length - 1} 笔` : ''}`, tag: 'lingjing-recharge-order', requireInteraction: true }); }
     },
     async enableNotifications() { if (typeof Notification === 'undefined') return; this.notificationPermission = await Notification.requestPermission(); if (this.notificationPermission === 'granted') new Notification('订单提醒已开启', { body: '有新充值订单时会在桌面通知你。' }); },
-    scrollToOrders() { this.adminActiveSection = 'billing'; this.$nextTick(() => this.$refs.orderSection?.scrollIntoView({ behavior: 'smooth', block: 'start' })); this.orderAlert = ''; },
+    scrollToOrders() { this.switchAdminSection('billing'); this.$nextTick(() => this.$refs.orderSection?.scrollIntoView({ behavior: 'smooth', block: 'start' })); this.orderAlert = ''; },
     async loadRefunds() {
       try { const response = await fetch('/api/admin/refunds', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取退款申请失败'); this.refunds = data.refunds || [] }
       catch (error) { this.errorMessage = error.message }
