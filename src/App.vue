@@ -263,7 +263,7 @@
           <div class="design-stage-wrap">
             <canvas ref="designCanvas" class="design-canvas" :width="designWidth" :height="designHeight" @mousedown="startDesignDrag" @mousemove="moveDesignDrag" @mouseup="endDesignDrag" @mouseleave="endDesignDrag" @touchstart.prevent="startDesignDrag" @touchmove.prevent="moveDesignDrag" @touchend="endDesignDrag"></canvas>
           </div>
-          <p class="design-tip">提示：拖动商品图调整位置，使用左侧滑杆调整大小</p>
+          <p class="design-tip">提示：商品图、标题、价格和卖点都可以直接拖动调整位置</p>
           <p v-if="designMessage" class="design-message" :class="{ error: designError }">{{ designMessage }}</p>
           <div class="design-actions"><button @click="saveDesignDraft">保存草稿</button><button @click="resetDesign">清空画布</button><button class="primary" @click="exportDesign">↓ 导出 PNG</button></div>
         </div>
@@ -465,6 +465,15 @@ export default {
       designImageX: 0.5,
       designImageY: 0.59,
       designImageRect: null,
+      designTextRects: {},
+      designActiveElement: '',
+      designDragOffset: { x: 0, y: 0 },
+      designTitleX: 0.065,
+      designTitleY: 0.07,
+      designPriceX: 0.065,
+      designPriceY: 0.245,
+      designSellingPointX: 0.065,
+      designSellingPointY: 0.335,
       designDragging: false,
       designBgLoading: false,
       designMessage: '',
@@ -704,15 +713,16 @@ export default {
       ctx.drawImage(image, (width - w) / 2, (height - h) / 2, w, h);
     },
     drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 2) {
-      const chars = Array.from(text || ''); let line = ''; let lineIndex = 0;
+      const chars = Array.from(text || ''); let line = ''; let lineIndex = 0; let widest = 0;
       for (let index = 0; index < chars.length; index += 1) {
         const test = line + chars[index];
         if (ctx.measureText(test).width > maxWidth && line) {
-          ctx.fillText(line, x, y + lineIndex * lineHeight); line = chars[index]; lineIndex += 1;
+          ctx.fillText(line, x, y + lineIndex * lineHeight); widest = Math.max(widest, ctx.measureText(line).width); line = chars[index]; lineIndex += 1;
           if (lineIndex >= maxLines) break;
         } else line = test;
       }
-      if (line && lineIndex < maxLines) ctx.fillText(line, x, y + lineIndex * lineHeight);
+      if (line && lineIndex < maxLines) { ctx.fillText(line, x, y + lineIndex * lineHeight); widest = Math.max(widest, ctx.measureText(line).width); lineIndex += 1; }
+      return { width: Math.min(maxWidth, widest), height: Math.max(lineHeight, lineIndex * lineHeight) };
     },
     drawDesignCanvas() {
       const canvas = this.$refs.designCanvas; if (!canvas) return;
@@ -727,22 +737,40 @@ export default {
         ctx.shadowColor = 'rgba(20,20,30,.22)'; ctx.shadowBlur = Math.round(w * 0.025); ctx.shadowOffsetY = Math.round(w * 0.012); ctx.drawImage(image, x, y, imageW, imageH); ctx.shadowColor = 'transparent';
         this.designImageRect = { x, y, width: imageW, height: imageH };
       } else this.designImageRect = null;
-      const left = w * 0.065; ctx.textBaseline = 'top'; ctx.fillStyle = this.designTextColor;
-      ctx.font = `800 ${Math.round(w * 0.075)}px system-ui, sans-serif`; this.drawWrappedText(ctx, this.designTitle, left, h * 0.07, w * 0.87, w * 0.087, 2);
-      ctx.fillStyle = '#ff3d57'; ctx.font = `900 ${Math.round(w * 0.065)}px system-ui, sans-serif`; ctx.fillText(this.designPrice, left, h * 0.245);
-      ctx.fillStyle = this.designTextColor; ctx.globalAlpha = 0.78; ctx.font = `600 ${Math.round(w * 0.03)}px system-ui, sans-serif`; this.drawWrappedText(ctx, this.designSellingPoint, left, h * 0.335, w * 0.87, w * 0.043, 2); ctx.globalAlpha = 1;
+      ctx.textBaseline = 'top'; ctx.fillStyle = this.designTextColor;
+      const titleX = this.designTitleX * w; const titleY = this.designTitleY * h;
+      ctx.font = `800 ${Math.round(w * 0.075)}px system-ui, sans-serif`; const titleSize = this.drawWrappedText(ctx, this.designTitle, titleX, titleY, w * 0.87, w * 0.087, 2);
+      ctx.fillStyle = '#ff3d57'; const priceX = this.designPriceX * w; const priceY = this.designPriceY * h; ctx.font = `900 ${Math.round(w * 0.065)}px system-ui, sans-serif`; ctx.fillText(this.designPrice, priceX, priceY); const priceSize = { width: ctx.measureText(this.designPrice || ' ').width, height: w * 0.078 };
+      ctx.fillStyle = this.designTextColor; ctx.globalAlpha = 0.78; const sellingX = this.designSellingPointX * w; const sellingY = this.designSellingPointY * h; ctx.font = `600 ${Math.round(w * 0.03)}px system-ui, sans-serif`; const sellingSize = this.drawWrappedText(ctx, this.designSellingPoint, sellingX, sellingY, w * 0.87, w * 0.043, 2); ctx.globalAlpha = 1;
+      this.designTextRects = {
+        title: { x: titleX, y: titleY, width: Math.max(titleSize.width, w * 0.12), height: titleSize.height },
+        price: { x: priceX, y: priceY, width: Math.max(priceSize.width, w * 0.1), height: priceSize.height },
+        sellingPoint: { x: sellingX, y: sellingY, width: Math.max(sellingSize.width, w * 0.15), height: sellingSize.height }
+      };
+      const selectedRect = this.designActiveElement === 'product' ? this.designImageRect : this.designTextRects[this.designActiveElement];
+      if (selectedRect) { ctx.save(); ctx.strokeStyle = '#7656ff'; ctx.lineWidth = Math.max(2, w * 0.003); ctx.setLineDash([w * 0.012, w * 0.008]); ctx.strokeRect(selectedRect.x - 8, selectedRect.y - 8, selectedRect.width + 16, selectedRect.height + 16); ctx.restore(); }
     },
     designPointer(event) {
       const canvas = this.$refs.designCanvas; const rect = canvas.getBoundingClientRect(); const point = event.touches?.[0] || event.changedTouches?.[0] || event;
       return { x: (point.clientX - rect.left) * canvas.width / rect.width, y: (point.clientY - rect.top) * canvas.height / rect.height };
     },
     startDesignDrag(event) {
-      if (!this.designImageRect) return; const point = this.designPointer(event); const rect = this.designImageRect;
-      this.designDragging = point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+      const point = this.designPointer(event); const hit = rect => rect && point.x >= rect.x - 10 && point.x <= rect.x + rect.width + 10 && point.y >= rect.y - 10 && point.y <= rect.y + rect.height + 10;
+      this.designActiveElement = ['sellingPoint', 'price', 'title'].find(name => hit(this.designTextRects[name])) || (hit(this.designImageRect) ? 'product' : '');
+      const activeRect = this.designActiveElement === 'product' ? this.designImageRect : this.designTextRects[this.designActiveElement];
+      if (activeRect) this.designDragOffset = { x: point.x - activeRect.x, y: point.y - activeRect.y };
+      this.designDragging = Boolean(this.designActiveElement); this.drawDesignCanvas();
     },
     moveDesignDrag(event) {
       if (!this.designDragging) return; const point = this.designPointer(event);
-      this.designImageX = Math.max(0, Math.min(1, point.x / this.designWidth)); this.designImageY = Math.max(0, Math.min(1, point.y / this.designHeight)); this.drawDesignCanvas();
+      const rect = this.designActiveElement === 'product' ? this.designImageRect : this.designTextRects[this.designActiveElement];
+      const left = point.x - this.designDragOffset.x; const top = point.y - this.designDragOffset.y;
+      const x = Math.max(0.01, Math.min(0.98, left / this.designWidth)); const y = Math.max(0.01, Math.min(0.98, top / this.designHeight));
+      if (this.designActiveElement === 'product') { this.designImageX = Math.max(0, Math.min(1, (left + rect.width / 2) / this.designWidth)); this.designImageY = Math.max(0, Math.min(1, (top + rect.height / 2) / this.designHeight)); }
+      if (this.designActiveElement === 'title') { this.designTitleX = x; this.designTitleY = y; }
+      if (this.designActiveElement === 'price') { this.designPriceX = x; this.designPriceY = y; }
+      if (this.designActiveElement === 'sellingPoint') { this.designSellingPointX = x; this.designSellingPointY = y; }
+      this.drawDesignCanvas();
     },
     endDesignDrag() { this.designDragging = false; },
     async generateDesignBackground() {
@@ -763,25 +791,25 @@ export default {
     },
     saveDesignDraft() {
       try {
-        localStorage.setItem('lingjing-design-draft', JSON.stringify({ preset: this.designPreset, width: this.designWidth, height: this.designHeight, title: this.designTitle, price: this.designPrice, sellingPoint: this.designSellingPoint, textColor: this.designTextColor, backgroundColor: this.designBackgroundColor, backgroundPrompt: this.designBackgroundPrompt, productSource: this.designProductSource, backgroundSource: this.designBackgroundSource, imageScale: this.designImageScale, imageX: this.designImageX, imageY: this.designImageY }));
+        localStorage.setItem('lingjing-design-draft', JSON.stringify({ preset: this.designPreset, width: this.designWidth, height: this.designHeight, title: this.designTitle, price: this.designPrice, sellingPoint: this.designSellingPoint, textColor: this.designTextColor, backgroundColor: this.designBackgroundColor, backgroundPrompt: this.designBackgroundPrompt, productSource: this.designProductSource, backgroundSource: this.designBackgroundSource, imageScale: this.designImageScale, imageX: this.designImageX, imageY: this.designImageY, titleX: this.designTitleX, titleY: this.designTitleY, priceX: this.designPriceX, priceY: this.designPriceY, sellingPointX: this.designSellingPointX, sellingPointY: this.designSellingPointY }));
         this.designMessage = '草稿已保存在当前浏览器'; this.designError = false;
       } catch (_error) { this.designMessage = '商品图较大，浏览器空间不足，请先导出成品'; this.designError = true; }
     },
     async loadDesignDraft() {
       try {
         const draft = JSON.parse(localStorage.getItem('lingjing-design-draft') || 'null'); if (!draft) return;
-        this.designPreset = draft.preset || 'taobao'; this.designWidth = draft.width || 800; this.designHeight = draft.height || 800; this.designTitle = draft.title || ''; this.designPrice = draft.price || ''; this.designSellingPoint = draft.sellingPoint || ''; this.designTextColor = draft.textColor || '#171821'; this.designBackgroundColor = draft.backgroundColor || '#f4efe8'; this.designBackgroundPrompt = draft.backgroundPrompt || ''; this.designImageScale = draft.imageScale || 0.62; this.designImageX = draft.imageX ?? 0.5; this.designImageY = draft.imageY ?? 0.59;
+        this.designPreset = draft.preset || 'taobao'; this.designWidth = draft.width || 800; this.designHeight = draft.height || 800; this.designTitle = draft.title || ''; this.designPrice = draft.price || ''; this.designSellingPoint = draft.sellingPoint || ''; this.designTextColor = draft.textColor || '#171821'; this.designBackgroundColor = draft.backgroundColor || '#f4efe8'; this.designBackgroundPrompt = draft.backgroundPrompt || ''; this.designImageScale = draft.imageScale || 0.62; this.designImageX = draft.imageX ?? 0.5; this.designImageY = draft.imageY ?? 0.59; this.designTitleX = draft.titleX ?? 0.065; this.designTitleY = draft.titleY ?? 0.07; this.designPriceX = draft.priceX ?? 0.065; this.designPriceY = draft.priceY ?? 0.245; this.designSellingPointX = draft.sellingPointX ?? 0.065; this.designSellingPointY = draft.sellingPointY ?? 0.335;
         if (draft.productSource) { this.designProductSource = draft.productSource; this.designProductImage = await this.loadDesignImage(draft.productSource); }
         if (draft.backgroundSource) { this.designBackgroundSource = draft.backgroundSource; this.designBackgroundImage = await this.loadDesignImage(draft.backgroundSource); }
       } catch (_error) { localStorage.removeItem('lingjing-design-draft'); }
     },
     resetDesign() {
       if (!window.confirm('确定清空当前画布吗？')) return;
-      this.designTitle = ''; this.designPrice = ''; this.designSellingPoint = ''; this.designProductImage = null; this.designProductSource = ''; this.designBackgroundImage = null; this.designBackgroundSource = ''; this.designBackgroundColor = '#f4efe8'; this.designMessage = ''; localStorage.removeItem('lingjing-design-draft'); this.drawDesignCanvas();
+      this.designTitle = ''; this.designPrice = ''; this.designSellingPoint = ''; this.designTitleX = 0.065; this.designTitleY = 0.07; this.designPriceX = 0.065; this.designPriceY = 0.245; this.designSellingPointX = 0.065; this.designSellingPointY = 0.335; this.designActiveElement = ''; this.designProductImage = null; this.designProductSource = ''; this.designBackgroundImage = null; this.designBackgroundSource = ''; this.designBackgroundColor = '#f4efe8'; this.designMessage = ''; localStorage.removeItem('lingjing-design-draft'); this.drawDesignCanvas();
     },
     exportDesign() {
       const canvas = this.$refs.designCanvas; if (!canvas) return;
-      try { const link = document.createElement('a'); link.download = `lingjing-design-${Date.now()}.png`; link.href = canvas.toDataURL('image/png'); link.click(); this.designMessage = 'PNG 已导出'; this.designError = false; }
+      try { this.designActiveElement = ''; this.drawDesignCanvas(); const link = document.createElement('a'); link.download = `lingjing-design-${Date.now()}.png`; link.href = canvas.toDataURL('image/png'); link.click(); this.designMessage = 'PNG 已导出'; this.designError = false; }
       catch (_error) { this.designMessage = '背景图片暂不允许跨域导出，请重新生成或使用纯色背景'; this.designError = true; }
     },
     selectVideoMode(mode) {
