@@ -227,7 +227,7 @@
               <video v-if="resultType === 'video'" :src="image" autoplay loop muted playsinline controls />
               <img v-else :src="image" :alt="`AI 生成作品 ${i + 1}`" />
               <div class="result-actions">
-                <button @click="toggleFavorite(image)">{{ favorites.includes(image) ? "♥" : "♡" }}</button><button @click="download(image, i)">↓</button>
+                <button @click="toggleFavorite(image, resultType, prompt)">{{ isFavorite(image) ? "♥" : "♡" }}</button><button @click="download(image, i)">↓</button>
               </div>
             </article>
           </div>
@@ -268,7 +268,32 @@
           <div class="design-actions"><button @click="saveDesignDraft">保存草稿</button><button @click="resetDesign">清空画布</button><button class="primary" @click="exportDesign">↓ 导出 PNG</button></div>
         </div>
       </section>
-      <section v-else-if="page !== 'copy' && page !== 'canvas'" class="placeholder-view">
+      <section v-else-if="page === 'works' || page === 'favorites'" class="asset-view">
+        <div class="asset-toolbar">
+          <div><h2>{{ page === 'works' ? '我的作品' : '我的收藏' }}</h2><p>{{ page === 'works' ? '云端保存最近生成的内容，随时查看和下载' : '收藏喜欢的作品，登录后可跨设备查看' }}</p></div>
+          <div class="asset-filters"><button v-for="filter in assetFilters" :key="filter.id" :class="{ active: assetFilter === filter.id }" @click="assetFilter = filter.id">{{ filter.name }}</button></div>
+        </div>
+        <div v-if="assetLoading" class="asset-state"><div class="loader"><i /><i /><i /></div><h3>正在读取云端资产</h3></div>
+        <div v-else-if="assetError" class="asset-state error"><h3>读取失败</h3><p>{{ assetError }}</p><button @click="loadAssetPage(page)">重新加载</button></div>
+        <div v-else-if="displayedAssetItems.length" class="asset-grid">
+          <article v-for="(item, index) in displayedAssetItems" :key="item.id || item.url">
+            <div class="asset-preview">
+              <video v-if="item.type === 'video'" :src="item.url" controls preload="metadata" />
+              <img v-else-if="item.type !== 'text'" :src="item.url" :alt="item.prompt || 'AI 作品'" loading="lazy" />
+              <pre v-else>{{ item.text }}</pre>
+              <span>{{ assetTypeName(item.type) }}</span>
+            </div>
+            <div class="asset-info"><p>{{ item.prompt || (item.type === 'text' ? '电商文案' : '未记录描述') }}</p><small>{{ formatHistoryDate(item.createdAt) }}</small></div>
+            <div class="asset-actions">
+              <button v-if="item.type === 'text'" @click="copyAssetText(item)">{{ copiedAssetId === item.id ? '已复制' : '复制文案' }}</button>
+              <button v-else @click="downloadAsset(item, index)">↓ 下载</button>
+              <button v-if="item.type !== 'text'" :class="{ liked: isFavorite(item.url) }" @click="toggleFavorite(item.url, item.type, item.prompt)">{{ isFavorite(item.url) ? '♥ 取消收藏' : '♡ 收藏' }}</button>
+            </div>
+          </article>
+        </div>
+        <div v-else class="asset-state"><div class="placeholder-icon">{{ page === 'works' ? '作' : '藏' }}</div><h3>{{ assetFilter === 'all' ? (page === 'works' ? '还没有云端作品' : '还没有收藏作品') : '该分类暂时没有内容' }}</h3><p>完成生成后，作品会自动保存在这里。</p><button @click="go('image')">开始创作</button></div>
+      </section>
+      <section v-else-if="page !== 'copy' && page !== 'canvas' && page !== 'works' && page !== 'favorites'" class="placeholder-view">
         <div class="placeholder-icon">✦</div>
         <h2>{{ pages[page][0] }}</h2>
         <p>完整功能即将上线，敬请期待。</p>
@@ -413,7 +438,12 @@ export default {
       referenceImages: [],
       results: [],
       resultType: "image",
-      favorites: JSON.parse(localStorage.getItem("ai-favorites") || "[]"),
+      favorites: [],
+      assetFilters: [{ id: 'all', name: '全部' }, { id: 'image', name: '图片' }, { id: 'gif', name: 'GIF' }, { id: 'video', name: '视频' }, { id: 'text', name: '文案' }],
+      assetFilter: 'all',
+      assetLoading: false,
+      assetError: '',
+      copiedAssetId: '',
       errorMessage: "",
       authReady: false,
       authOpen: false,
@@ -523,17 +553,32 @@ export default {
       const records = this.historyRecords.filter(record => record.action !== 'prompt_enhance');
       return this.historyOnlyCopy ? records.filter(record => record.action === 'copy_generation') : records;
     },
+    workAssetItems() {
+      const items = [];
+      this.historyRecords.filter(record => record.status === 'completed' && record.action !== 'prompt_enhance').forEach(record => {
+        if (record.output_text) items.push({ id: `${record.id}-text`, type: 'text', text: record.output_text, prompt: record.prompt, createdAt: record.created_at });
+        (record.output_urls || []).forEach((url, index) => items.push({ id: `${record.id}-${index}`, url, type: record.action === 'video_generation' ? 'video' : (record.action === 'gif_generation' ? 'gif' : 'image'), prompt: record.prompt, createdAt: record.created_at }));
+      });
+      return items;
+    },
+    favoriteAssetItems() {
+      return this.favorites.map(item => ({ id: item.id, url: item.asset_url, type: item.media_type, prompt: item.prompt, createdAt: item.created_at }));
+    },
+    displayedAssetItems() {
+      const items = this.page === 'favorites' ? this.favoriteAssetItems : this.workAssetItems;
+      return this.assetFilter === 'all' ? items : items.filter(item => item.type === this.assetFilter);
+    },
   },
   async mounted() {
     this.loadDesignDraft()
     if (!supabaseConfigured) { this.authReady = true; return }
     const { data } = await supabase.auth.getSession()
     this.session = data.session
-    if (this.session) await this.loadProfile()
+    if (this.session) { await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); }
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       this.session = session
       this.profile = null
-      if (session) { this.authOpen = false; await this.loadProfile() }
+      if (session) { this.authOpen = false; await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); }
     })
     this.authSubscription = listener.subscription
     this.authReady = true
@@ -559,6 +604,23 @@ export default {
     },
     authHeaders(extra = {}) {
       return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
+    },
+    async loadFavorites() {
+      if (!this.session) { this.favorites = []; return; }
+      const response = await fetch('/api/favorites', { headers: this.authHeaders() }); const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '读取收藏失败');
+      this.favorites = data.favorites || [];
+    },
+    async loadAssetPage(page) {
+      if (!this.session) { this.requestLogin('请先登录后查看个人资产'); return; }
+      this.assetLoading = true; this.assetError = '';
+      try {
+        if (page === 'works') {
+          const response = await fetch('/api/usage', { headers: this.authHeaders() }); const data = await response.json();
+          if (!response.ok) throw new Error(data.error || '读取作品失败'); this.historyRecords = data.records || [];
+        } else await this.loadFavorites();
+      } catch (error) { this.assetError = error.message; }
+      finally { this.assetLoading = false; }
     },
     async openRecharge() {
       if (!this.session) { this.requestLogin('请先登录后再充值'); return; }
@@ -673,6 +735,7 @@ export default {
       this.mode = 'text';
       this.menuOpen = false;
       if (p === 'canvas') this.$nextTick(this.drawDesignCanvas);
+      if (['works', 'favorites'].includes(p)) { this.assetFilter = 'all'; this.loadAssetPage(p); }
     },
     selectDesignPreset(preset) {
       this.designPreset = preset.id;
@@ -870,9 +933,24 @@ export default {
       this.referenceImages = [];
       this.errorMessage = "";
     },
-    toggleFavorite(image) {
-      this.favorites = this.favorites.includes(image) ? this.favorites.filter((item) => item !== image) : [image, ...this.favorites];
-      localStorage.setItem("ai-favorites", JSON.stringify(this.favorites));
+    isFavorite(url) { return this.favorites.some(item => item.asset_url === url); },
+    async toggleFavorite(assetUrl, mediaType = 'image', prompt = '') {
+      if (!this.session) { this.requestLogin('请先登录后收藏作品'); return; }
+      try {
+        const response = await fetch('/api/favorites/toggle', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ assetUrl, mediaType, prompt }) });
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || '收藏操作失败');
+        if (data.favorited) this.favorites = [data.favorite, ...this.favorites.filter(item => item.asset_url !== assetUrl)];
+        else this.favorites = this.favorites.filter(item => item.asset_url !== assetUrl);
+      } catch (error) { this.errorMessage = error.message; }
+    },
+    assetTypeName(type) { return ({ image: '图片', gif: 'GIF 动图', video: '视频', text: '电商文案' })[type] || '作品'; },
+    async copyAssetText(item) {
+      await navigator.clipboard.writeText(item.text || ''); this.copiedAssetId = item.id;
+      setTimeout(() => { if (this.copiedAssetId === item.id) this.copiedAssetId = ''; }, 1500);
+    },
+    downloadAsset(item, index) {
+      const link = document.createElement('a'); link.href = item.url; link.target = '_blank';
+      link.download = `lingjing-${item.type}-${Date.now()}-${index + 1}.${item.type === 'video' ? 'mp4' : (item.type === 'gif' ? 'gif' : 'png')}`; link.click();
     },
     download(image, index) {
       const link = document.createElement("a");

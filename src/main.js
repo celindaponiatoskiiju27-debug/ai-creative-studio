@@ -7,5 +7,6 @@ import './profile.css'
 import './motion.css'
 import './admin.css'
 import './canvas.css'
+import './assets.css'
 Vue.config.productionTip=false
 new Vue({render:h=>h(App)}).$mount('#app')

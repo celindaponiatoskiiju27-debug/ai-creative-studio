@@ -459,6 +459,33 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
   } catch (error) { next(error) }
 })
 
+app.get('/api/favorites', requireUser, async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('favorites').select('id,asset_url,media_type,prompt,created_at').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(200)
+    if (error) throw error
+    res.json({ favorites: data || [] })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/favorites/toggle', requireUser, async (req, res, next) => {
+  try {
+    const assetUrl = String(req.body.assetUrl || '').trim()
+    const mediaType = ['image', 'gif', 'video'].includes(req.body.mediaType) ? req.body.mediaType : 'image'
+    const prompt = String(req.body.prompt || '').trim().slice(0, 1000) || null
+    if (!assetUrl || !/^https?:\/\//i.test(assetUrl)) return res.status(400).json({ error: '收藏作品地址无效' })
+    const existing = await supabaseAdmin().from('favorites').select('id').eq('user_id', req.user.id).eq('asset_url', assetUrl).maybeSingle()
+    if (existing.error) throw existing.error
+    if (existing.data) {
+      const { error } = await supabaseAdmin().from('favorites').delete().eq('id', existing.data.id).eq('user_id', req.user.id)
+      if (error) throw error
+      return res.json({ favorited: false, id: existing.data.id })
+    }
+    const { data, error } = await supabaseAdmin().from('favorites').insert({ user_id: req.user.id, asset_url: assetUrl, media_type: mediaType, prompt }).select('id,asset_url,media_type,prompt,created_at').single()
+    if (error) throw error
+    res.status(201).json({ favorited: true, favorite: data })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/admin/support/conversations', requireUser, requireAdmin, async (_req, res, next) => {
   try {
     const { data: conversations, error } = await supabaseAdmin().from('support_conversations').select('*').order('last_message_at', { ascending: false }).limit(200)
