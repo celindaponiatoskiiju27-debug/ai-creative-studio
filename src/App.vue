@@ -27,7 +27,7 @@
           <div class="progress"><i :style="{ width: creditProgress }" /></div>
           <small>图片低至 2 点，动图 6 点</small>
         </div>
-        <button class="profile" :title="profileEmail" @click="!session && requestLogin('登录后可使用个人账户功能')">
+        <button class="profile" :title="profileEmail" @click="session ? accountOpen = true : requestLogin('登录后可使用个人账户功能')">
           <span class="avatar">{{ avatarText }}</span
           ><span><b>{{ displayName }}</b><small>{{ accountLabel }} · {{ profileEmail }}</small></span
           ><i v-if="session" @click.stop="logout">退出</i><i v-else>登录</i>
@@ -399,6 +399,7 @@
       </section>
     </div>
     <AuthModal v-if="authReady && (passwordRecovery || (!session && authOpen))" :recovery-mode="passwordRecovery" @close="closeAuthModal" @recovered="finishPasswordRecovery" @legal="openLegal" />
+    <AccountModal v-if="session && profile && accountOpen" :profile="profile" :session="session" @close="accountOpen = false" @works="accountOpen = false; go('works')" @recharge="accountOpen = false; openRecharge()" @logout="accountOpen = false; logout()" />
     <LegalModal v-if="legalOpen" :initial-tab="legalTab" @close="legalOpen = false" />
     <div v-if="onboardingOpen" class="onboarding-overlay" @click.self="closeOnboarding">
       <section class="onboarding-modal">
@@ -417,12 +418,13 @@
 </template>
 <script>
 import AuthModal from './AuthModal.vue'
+import AccountModal from './AccountModal.vue'
 import LegalModal from './LegalModal.vue'
 import { supabase, supabaseConfigured } from './supabase'
 
 export default {
   name: "App",
-  components: { AuthModal, LegalModal },
+  components: { AuthModal, AccountModal, LegalModal },
   data() {
     const models = [{ name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型" }];
     return {
@@ -516,6 +518,7 @@ export default {
       errorMessage: "",
       authReady: false,
       authOpen: false,
+      accountOpen: false,
       passwordRecovery: window.location.hash.includes('type=recovery'),
       legalOpen: false,
       legalTab: 'terms',
