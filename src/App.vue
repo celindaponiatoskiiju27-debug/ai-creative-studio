@@ -79,6 +79,7 @@
       <section v-if="page === 'copy'" class="copywriter-view">
         <div class="copy-form-card">
           <div class="copy-intro"><span>AI</span><div><b>电商文案生成器</b><small>填写商品信息，快速生成可直接使用的营销文案</small></div></div>
+          <div class="field model-select-field"><label>文案模型</label><select v-model="textModelId" class="copy-input"><option v-for="m in textModels" :key="m.id" :value="m.id" :disabled="!m.available">{{ m.name }}{{ m.available ? '' : '（暂不可用）' }}</option></select><small>{{ selectedTextModelDescription }}</small></div>
           <div class="starter-templates"><span>快速开始</span><button v-for="item in copyTemplates" :key="item.name" @click="applyCopyTemplate(item)">{{ item.name }}</button></div>
           <div class="field"><label>商品名称</label><input v-model="copyProduct" class="copy-input" maxlength="100" placeholder="例如：夏季冰丝防晒衣" /></div>
           <div class="field"><label>核心卖点</label><textarea v-model="copyFeatures" class="copy-textarea" maxlength="1000" placeholder="例如：UPF50+、冰凉透气、轻薄不闷汗、男女同款"></textarea></div>
@@ -145,6 +146,7 @@
             </div>
             <div class="starter-templates prompt-templates"><span>电商模板</span><button v-for="item in imageTemplates" :key="item.name" @click="applyImageTemplate(item)">{{ item.name }}</button></div>
           </div>
+          <div v-if="page === 'video'" class="field model-select-field"><label>视频模型</label><select v-model="videoModelId" class="copy-input"><option v-for="m in videoModels" :key="`${m.provider}-${m.id}`" :value="m.id" :disabled="!m.available">{{ m.name }}{{ m.available ? '' : '（暂不可用）' }}</option></select><small>{{ selectedVideoModelDescription }}</small></div>
           <div v-if="page === 'video' && videoMode === 'image'" class="field upload-field">
             <label>待生成动图的图片</label
             ><label class="upload-box"
@@ -164,9 +166,9 @@
               ><i>⌄</i>
             </button>
             <div v-if="modelOpen" class="model-menu">
-              <button v-for="m in models" :key="m.name" @click="selectModel(m)">
+              <button v-for="m in models" :key="m.id || m.name" :disabled="!m.available" :class="{ unavailable: !m.available }" @click="selectModel(m)">
                 <b>{{ m.name }}</b
-                ><small>{{ m.desc }}</small>
+                ><small>{{ m.desc }}{{ m.available ? '' : ' · 暂不可用' }}</small>
               </button>
             </div>
           </div>
@@ -439,7 +441,7 @@ export default {
   name: "App",
   components: { AuthModal, AccountModal, LegalModal },
   data() {
-    const models = [{ name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型" }];
+    const models = [{ id: "gpt-image-2", name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型", available: true }];
     return {
       nav: [
         { id: "home", name: "产品首页", icon: "⌂" },
@@ -474,6 +476,10 @@ export default {
       videoMode: "image",
       models,
       model: models[0],
+      textModels: [{ id: "gpt-5.4", name: "GPT-5.4", description: "电商文案与提示词润色", available: true }],
+      textModelId: "gpt-5.4",
+      videoModels: [],
+      videoModelId: "",
       ratios: [
         { value: "1:1", icon: "square" },
         { value: "4:3", icon: "landscape" },
@@ -617,6 +623,12 @@ export default {
     };
   },
   computed: {
+    selectedTextModelDescription() {
+      return this.textModels.find(item => item.id === this.textModelId)?.description || '';
+    },
+    selectedVideoModelDescription() {
+      return this.videoModels.find(item => item.id === this.videoModelId)?.description || '';
+    },
     meta() {
       return this.state === "empty"
         ? "等待你的灵感"
@@ -676,7 +688,7 @@ export default {
     },
   },
   async mounted() {
-    localStorage.setItem('lingjing-anonymous-id', this.anonymousId); this.trackEvent('page_view', { page: this.page }); if (this.onboardingOpen) this.trackEvent('onboarding_view'); this.loadSiteAnnouncement()
+    localStorage.setItem('lingjing-anonymous-id', this.anonymousId); this.trackEvent('page_view', { page: this.page }); if (this.onboardingOpen) this.trackEvent('onboarding_view'); this.loadSiteAnnouncement(); await this.loadModels()
     this.loadDesignDraft()
     if (!supabaseConfigured) { this.authReady = true; return }
     const { data } = await supabase.auth.getSession()
@@ -697,6 +709,16 @@ export default {
     this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
+    async loadModels() {
+      try {
+        const response = await fetch('/api/models'); const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取模型列表失败');
+        const images = (data.models?.image || []).map(item => ({ ...item, desc: item.description || '' }));
+        if (images.length) { this.models = images; this.model = images.find(item => item.available) || images[0]; }
+        this.textModels = data.models?.text || this.textModels; this.textModelId = this.textModels.find(item => item.available)?.id || this.textModels[0]?.id || '';
+        this.videoModels = data.models?.video || []; this.videoModelId = this.videoModels.find(item => item.available)?.id || this.videoModels[0]?.id || '';
+      } catch (error) { console.warn('[models]', error.message); }
+    },
     async loadSiteAnnouncement() { try { const response = await fetch('/api/site-announcement'); const data = await response.json(); const item = data.announcement; if (item && localStorage.getItem('lingjing-dismissed-announcement') !== item.updated_at) this.$set(this.$data, 'siteAnnouncement', item) } catch (_error) {} },
     dismissAnnouncement() { if (this.$data.siteAnnouncement?.updated_at) localStorage.setItem('lingjing-dismissed-announcement', this.$data.siteAnnouncement.updated_at); this.$delete(this.$data, 'siteAnnouncement') },
     trackEvent(eventType, metadata = {}) { fetch('/api/events', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ eventType, anonymousId: this.anonymousId, metadata }) }).catch(() => {}) },
@@ -855,7 +877,7 @@ export default {
       try {
         const response = await fetch('/api/copy/generate', {
           method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ product: this.copyProduct, features: this.copyFeatures, platform: this.copyPlatform, style: this.copyStyle })
+          body: JSON.stringify({ product: this.copyProduct, features: this.copyFeatures, platform: this.copyPlatform, style: this.copyStyle, modelId: this.textModelId })
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '文案生成失败');
@@ -1003,7 +1025,7 @@ export default {
       this.designBgLoading = true; this.designMessage = ''; this.designError = false;
       try {
         const ratio = this.designWidth > this.designHeight ? '16:9' : (this.designWidth < this.designHeight ? '3:4' : '1:1');
-        const response = await fetch('/api/images/generate', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prompt: `${this.designBackgroundPrompt.trim()}。纯净电商摄影背景，预留商品摆放空间，不出现商品、人物、文字、标志和水印`, ratio, count: 1 }) });
+        const response = await fetch('/api/images/generate', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prompt: `${this.designBackgroundPrompt.trim()}。纯净电商摄影背景，预留商品摆放空间，不出现商品、人物、文字、标志和水印`, ratio, count: 1, modelId: this.model.id }) });
         const data = await response.json(); if (!response.ok) throw new Error(data.error || 'AI 背景生成失败');
         this.designBackgroundSource = data.images?.[0] || ''; this.designBackgroundImage = await this.loadDesignImage(this.designBackgroundSource);
         if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
@@ -1054,7 +1076,7 @@ export default {
         const response = await fetch('/api/prompt/enhance', {
           method: 'POST',
           headers: this.authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ prompt })
+          body: JSON.stringify({ prompt, modelId: this.textModelId })
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'AI 润色失败');
@@ -1067,6 +1089,7 @@ export default {
       }
     },
     selectModel(m) {
+      if (!m.available) return;
       this.model = m;
       this.modelOpen = false;
     },
@@ -1163,7 +1186,7 @@ export default {
           if (this.uploadFile) body.append("image", this.uploadFile);
           body.append("mode", this.videoMode);
           body.append("outputFormat", this.videoMode === 'image' ? 'gif' : 'mp4');
-          body.append("prompt", this.prompt); body.append("ratio", this.ratio);
+          body.append("prompt", this.prompt); body.append("ratio", this.ratio); body.append("modelId", this.videoModelId);
           response = await fetch("/api/videos/generate", { method: "POST", headers: this.authHeaders(), body });
         } else if (this.referenceImages.length) {
           const body = new FormData();
@@ -1171,9 +1194,10 @@ export default {
           body.append("prompt", this.prompt);
           body.append("ratio", this.ratio);
           body.append("count", String(this.count));
+          body.append("modelId", this.model.id);
           response = await fetch("/api/images/edit", { method: "POST", headers: this.authHeaders(), body });
         } else {
-          response = await fetch("/api/images/generate", { method: "POST", headers: this.authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ prompt: this.prompt, ratio: this.ratio, count: this.count }) });
+          response = await fetch("/api/images/generate", { method: "POST", headers: this.authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ prompt: this.prompt, ratio: this.ratio, count: this.count, modelId: this.model.id }) });
         }
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "生成失败");

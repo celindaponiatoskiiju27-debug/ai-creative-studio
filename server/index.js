@@ -254,6 +254,87 @@ function videoProvider() {
   return (process.env.VIDEO_PROVIDER || 'fal').trim().toLowerCase()
 }
 
+function parseModelList(envName, fallback) {
+  try { const parsed = JSON.parse(process.env[envName] || ''); if (Array.isArray(parsed) && parsed.length) return parsed } catch (_error) {}
+  return fallback
+}
+
+const runtimeModelFailures = new Map()
+const modelFailureKey = (type, item) => `${type}:${item.provider || 'default'}:${item.id}`
+const modelIsCoolingDown = (type, item) => (runtimeModelFailures.get(modelFailureKey(type, item)) || 0) > Date.now()
+const markModelFailure = (type, item) => runtimeModelFailures.set(modelFailureKey(type, item), Date.now() + 5 * 60 * 1000)
+const clearModelFailure = (type, item) => runtimeModelFailures.delete(modelFailureKey(type, item))
+let databaseModels = []
+let databaseModelsLoadedAt = 0
+
+async function refreshModelConfigs(force = false) {
+  if (!force && databaseModelsLoadedAt > Date.now() - 30000) return
+  try {
+    const { data, error } = await supabaseAdmin().from('model_configs').select('*').order('sort_order').order('created_at')
+    if (error) throw error
+    databaseModels = (data || []).map(item => ({ id: item.model_id, databaseId: item.id, type: item.type, provider: item.provider, name: item.name, description: item.description, textModel: item.text_model_id, enabled: item.enabled, sortOrder: item.sort_order }))
+    databaseModelsLoadedAt = Date.now()
+  } catch (error) {
+    if (error.code !== '42P01') console.error('[model-configs]', error.message)
+  }
+}
+
+function validateModelConfig(body) {
+  const type = String(body.type || '').trim().toLowerCase()
+  const provider = String(body.provider || '').trim().toLowerCase()
+  const modelId = String(body.model_id || body.id || '').trim()
+  const name = String(body.name || '').trim()
+  if (!['image', 'text', 'video'].includes(type)) { const error = new Error('请选择正确的功能类型'); error.status = 400; throw error }
+  if (!['openai', 'aliyun', 'fal'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
+  if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
+  if (type !== 'video' && provider !== 'openai') { const error = new Error('当前图片和文案模型仅支持 OpenAI 兼容接口'); error.status = 400; throw error }
+  return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)) }
+}
+
+function modelCatalog() {
+  const imageReady = Boolean(process.env.OPENAI_API_KEY) || mockEnabled
+  const textReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
+  const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
+  const falReady = Boolean(process.env.FAL_KEY)
+  const source = type => databaseModels.filter(item => item.type === type)
+  const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [{ id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '高质量商品图片生成', enabled: true }])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && imageReady && !modelIsCoolingDown('image', item) }))
+  const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [{ id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '电商文案与提示词润色', enabled: true }])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && textReady && !modelIsCoolingDown('text', item) }))
+  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : false) }))
+  return { image: images, text: texts, video: videos }
+}
+
+function selectedModel(type, requestedId) {
+  const models = modelCatalog()[type] || []; const requested = models.find(item => item.id === requestedId)
+  if (requested && requested.available) return requested
+  const fallback = models.find(item => item.available)
+  if (!fallback) { const error = new Error(`当前没有可用的${type === 'image' ? '图片' : type === 'text' ? '文案' : '视频'}模型`); error.status = 503; throw error }
+  return fallback
+}
+
+function modelCandidates(type, requestedId) {
+  const available = (modelCatalog()[type] || []).filter(item => item.available)
+  if (!available.length) return [selectedModel(type, requestedId)]
+  return [
+    ...available.filter(item => item.id === requestedId),
+    ...available.filter(item => item.id !== requestedId)
+  ]
+}
+
+async function withModelFallback(type, requestedId, runner) {
+  const candidates = modelCandidates(type, requestedId)
+  let lastError
+  for (const model of candidates) {
+    try {
+      const result = await runner(model); clearModelFailure(type, model); return { result, model }
+    } catch (error) {
+      lastError = error
+      markModelFailure(type, model)
+      console.error('[model-fallback]', type, model.provider, model.id, error.message)
+    }
+  }
+  throw lastError || new Error(`No available ${type} model`)
+}
+
 function dashScopeBaseUrl() {
   const baseUrl = process.env.DASHSCOPE_BASE_URL?.trim()
   if (!process.env.DASHSCOPE_API_KEY || !baseUrl) {
@@ -281,10 +362,10 @@ async function dashScopeRequest(url, options = {}) {
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
-async function generateAliyunVideo({ file, mode, prompt }) {
+async function generateAliyunVideo({ file, mode, prompt, selected }) {
   const baseUrl = dashScopeBaseUrl()
-  const imageModel = process.env.VIDEO_MODEL || 'wan2.6-i2v-flash'
-  const textModel = process.env.VIDEO_TEXT_MODEL || 'wan2.6-t2v'
+  const imageModel = selected?.id || process.env.VIDEO_MODEL || 'wan2.6-i2v-flash'
+  const textModel = selected?.textModel || process.env.VIDEO_TEXT_MODEL || 'wan2.6-t2v'
   const model = mode === 'image'
     ? (imageModel.startsWith('fal-ai/') ? 'wan2.6-i2v-flash' : imageModel)
     : (textModel.startsWith('fal-ai/') ? 'wan2.6-t2v' : textModel)
@@ -322,9 +403,9 @@ async function generateAliyunVideo({ file, mode, prompt }) {
   throw error
 }
 
-async function generateFalVideo({ file, mode, prompt, ratio }) {
+async function generateFalVideo({ file, mode, prompt, ratio, selected }) {
   configureFal()
-  const imageModel = process.env.VIDEO_MODEL || 'fal-ai/ltx-video/image-to-video'
+  const imageModel = selected?.id || process.env.VIDEO_MODEL || 'fal-ai/ltx-video/image-to-video'
   const model = mode === 'image' ? imageModel : falTextModel(imageModel)
   const input = { prompt: prompt.trim() }
   if (mode === 'image') input.image_url = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
@@ -336,7 +417,7 @@ async function generateFalVideo({ file, mode, prompt, ratio }) {
 }
 
 async function generateVideo(options) {
-  return videoProvider() === 'aliyun' ? generateAliyunVideo(options) : generateFalVideo(options)
+  return options.selected?.provider === 'aliyun' ? generateAliyunVideo(options) : generateFalVideo(options)
 }
 
 async function videoToGif(videoUrl) {
@@ -433,7 +514,7 @@ function allowRegistration(ip) {
 
 const sizes = { '1:1': '1024x1024', '4:3': '1536x1024', '16:9': '1536x1024', '3:4': '1024x1536', '9:16': '1024x1536' }
 const options = body => ({
-  model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
+  model: body.selectedModel?.id || process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
   prompt: body.prompt.trim(),
   size: sizes[body.ratio] || '1024x1024',
   n: Math.min(4, Math.max(1, Number(body.count) || 1)),
@@ -466,6 +547,35 @@ app.get('/api/health', (_req, res) => res.json({
   videoProvider: videoProvider(),
   provider: process.env.OPENAI_BASE_URL ? 'openai-compatible' : 'openai'
 }))
+
+app.get('/api/models', async (_req, res) => { await refreshModelConfigs(); res.json({ models: modelCatalog(), updatedAt: new Date().toISOString() }) })
+
+app.get('/api/admin/models', requireUser, requireAdmin, async (_req, res, next) => {
+  try { await refreshModelConfigs(true); res.json({ models: databaseModels, catalog: modelCatalog() }) } catch (error) { next(error) }
+})
+
+app.post('/api/admin/models', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const values = validateModelConfig(req.body)
+    const { data, error } = await supabaseAdmin().from('model_configs').insert(values).select('*').single(); if (error) throw error
+    await refreshModelConfigs(true); await auditAdmin(req, 'create_model', 'model', data.id, values); res.status(201).json({ model: data })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/models/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const values = { ...validateModelConfig(req.body), updated_at: new Date().toISOString() }
+    const { data, error } = await supabaseAdmin().from('model_configs').update(values).eq('id', req.params.id).select('*').single(); if (error) throw error
+    await refreshModelConfigs(true); await auditAdmin(req, 'update_model', 'model', data.id, values); res.json({ model: data })
+  } catch (error) { next(error) }
+})
+
+app.delete('/api/admin/models/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin().from('model_configs').delete().eq('id', req.params.id); if (error) throw error
+    await refreshModelConfigs(true); await auditAdmin(req, 'delete_model', 'model', req.params.id, {}); res.status(204).end()
+  } catch (error) { next(error) }
+})
 
 app.post('/api/auth/register', async (req, res, next) => {
   try {
@@ -1343,6 +1453,8 @@ app.get('/api/billing/transactions', requireUser, async (req, res, next) => {
 app.post('/api/copy/generate', requireUser, async (req, res, next) => {
   let usageId
   try {
+    await refreshModelConfigs()
+    let textModel = selectedModel('text', req.body.modelId)
     const product = String(req.body.product || '').trim()
     const features = String(req.body.features || '').trim()
     const platform = String(req.body.platform || '淘宝 / 天猫').trim()
@@ -1352,8 +1464,8 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
     await enforceContentSafety(req, prompt, 'copy_generation')
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'copy_generation' }, CREDIT_PRICES.copy, 1)
-    const stream = await textClient().responses.create({
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+    const textStream = await withModelFallback('text', req.body.modelId, candidate => textClient().responses.create({
+      model: candidate.id,
       reasoning: { effort: 'low' },
       max_output_tokens: 2000,
       stream: true,
@@ -1364,7 +1476,8 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
           content: [{ type: 'input_text', text: prompt }]
         }
       ]
-    })
+    }))
+    const stream = textStream.result; textModel = textStream.model
     let copy = ''
     let completedResponse
     for await (const event of stream) {
@@ -1381,7 +1494,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (saveCopyError) console.error('[archive-copy]', usageId, saveCopyError.message)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ copy, usageId, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ copy, usageId, model: textModel.id, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1391,6 +1504,8 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
 app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
   let usageId
   try {
+    await refreshModelConfigs()
+    let textModel = selectedModel('text', req.body.modelId)
     if (!allowPromptEnhance(req.user.id)) return res.status(429).json({ error: 'AI 润色操作过于频繁，请一分钟后再试' })
     const prompt = String(req.body.prompt || '').trim()
     if (!prompt) return res.status(400).json({ error: '请先输入需要润色的画面描述' })
@@ -1411,14 +1526,15 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
     const chargedCredits = (usedToday || 0) < 3 ? 0 : CREDIT_PRICES.enhance
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'prompt_enhance' }, chargedCredits, 1)
 
-    const stream = await textClient().responses.create({
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+    const textStream = await withModelFallback('text', req.body.modelId, candidate => textClient().responses.create({
+      model: candidate.id,
       reasoning: { effort: 'low' },
       max_output_tokens: 1000,
       stream: true,
       instructions: '你是一名专业的 AI 视觉提示词编辑。请将用户输入改写成一段更清晰、具体、可直接用于图片或视频生成的中文提示词。保留原始主体、商品信息和用户意图，补充合理的构图、环境、光线、镜头、材质、动作与画面风格；不得虚构具体品牌参数，不要解释，不要列点，不要使用 Markdown，只输出改写后的完整提示词。',
       input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }]
-    })
+    }))
+    const stream = textStream.result; textModel = textStream.model
     let enhancedPrompt = ''
     let completedResponse
     for await (const event of stream) {
@@ -1432,7 +1548,7 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
     const profile = await profileFor(req.user.id)
     res.json({
       prompt: enhancedPrompt,
-      model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+      model: textModel.id,
       credits: profile.credits,
       chargedCredits,
       freeRemaining: Math.max(0, 2 - (usedToday || 0))
@@ -1446,17 +1562,22 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
 app.post('/api/images/generate', requireUser, async (req, res, next) => {
   let usageId
   try {
+    await refreshModelConfigs()
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     await enforceContentSafety(req, req.body.prompt, 'image_generation')
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_generation' }, CREDIT_PRICES.image * count, count)
-    const generated = mockEnabled
-      ? await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
-      : images(await client().images.generate(options(req.body)))
+    let usedModel = selectedModel('image', req.body.modelId)
+    let generated
+    if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
+    else {
+      const generatedImage = await withModelFallback('image', req.body.modelId, model => client().images.generate(options({ ...req.body, selectedModel: model })))
+      generated = images(generatedImage.result); usedModel = generatedImage.model
+    }
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, usageId, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ images: storedImages, usageId, model: usedModel.id, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1466,6 +1587,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
 app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req, res, next) => {
   let usageId
   try {
+    await refreshModelConfigs()
     if (!req.files?.length) return res.status(400).json({ error: '请上传至少一张参考图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     await enforceContentSafety(req, req.body.prompt, 'image_edit')
@@ -1475,7 +1597,8 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
     else {
       const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
-      generated = images(await client().images.edit({ ...options(req.body), image }))
+      const editedImage = await withModelFallback('image', req.body.modelId, model => client().images.edit({ ...options({ ...req.body, selectedModel: model }), image }))
+      generated = images(editedImage.result)
     }
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
@@ -1490,19 +1613,21 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
 app.post('/api/videos/generate', requireUser, upload.single('image'), async (req, res, next) => {
   let usageId
   try {
+    await refreshModelConfigs()
     const mode = req.body.mode === 'text' ? 'text' : 'image'
     if (mode === 'image' && !req.file) return res.status(400).json({ error: '请上传一张静态图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面运动描述' })
     await enforceContentSafety(req, req.body.prompt, mode === 'image' ? 'gif_generation' : 'video_generation')
     const credits = mode === 'image' ? CREDIT_PRICES.gif : CREDIT_PRICES.video
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: mode === 'image' ? 'gif_generation' : 'video_generation' }, credits, 1)
-    const videoUrl = await generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio })
+    const generatedVideo = await withModelFallback('video', req.body.modelId, selected => generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio, selected }))
+    const videoUrl = generatedVideo.result
     const generatedOutputs = mode === 'image' ? [await videoToGif(videoUrl)] : [videoUrl]
     const storedOutputs = await archiveOrOriginal(req.user.id, usageId, generatedOutputs)
     const payload = mode === 'image' ? { gifs: storedOutputs } : { videos: storedOutputs }
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ ...payload, usageId, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ ...payload, usageId, model: generatedVideo.model.id, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
