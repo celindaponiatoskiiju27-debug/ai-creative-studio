@@ -94,6 +94,7 @@
           <p v-if="copyError" class="api-error">{{ copyError }}</p>
         </div>
         <div class="copy-result-card">
+          <div v-if="copyResult && copyUsageId" class="generation-feedback"><span>这次结果有帮助吗？</span><button :class="{ active: feedbackSelections[copyUsageId] === true }" @click="sendGenerationFeedback(copyUsageId,true)">👍 有帮助</button><button :class="{ active: feedbackSelections[copyUsageId] === false }" @click="sendGenerationFeedback(copyUsageId,false)">👎 不满意</button></div>
           <div class="copy-result-header"><div><h2>生成结果</h2><span>由 GPT-5.4 生成</span></div><div class="copy-header-actions"><button v-if="copyResult" class="history-btn" @click="copyCopyResult">{{ copyCopied ? '已复制' : '复制文案' }}</button><button class="history-btn" @click="openHistory(true)">◷ 文案历史</button></div></div>
           <div v-if="copyLoading" class="loading-state"><div class="loader"><i /><i /><i /></div><h3>正在分析商品卖点</h3><p>AI 正在为目标平台组织高转化文案…</p></div>
           <div v-else-if="!copyResult" class="copy-empty"><div class="placeholder-icon">文</div><h3>让好商品更会表达</h3><p>填写左侧商品资料，生成标题、卖点和营销正文</p></div>
@@ -261,6 +262,7 @@
               </div>
             </article>
           </div>
+          <div v-if="state === 'done' && currentUsageId" class="generation-feedback media-feedback"><span>这次结果有帮助吗？</span><button :class="{ active: feedbackSelections[currentUsageId] === true }" @click="sendGenerationFeedback(currentUsageId,true)">👍 有帮助</button><button :class="{ active: feedbackSelections[currentUsageId] === false }" @click="sendGenerationFeedback(currentUsageId,false)">👎 不满意</button></div>
         </div>
       </section>
       <section v-else-if="page === 'canvas'" class="design-view">
@@ -495,6 +497,7 @@ export default {
       copyPlatform: "淘宝 / 天猫",
       copyStyle: "突出卖点",
       copyResult: "",
+      copyUsageId: "",
       copyLoading: false,
       enhanceLoading: false,
       copyError: "",
@@ -509,6 +512,8 @@ export default {
       uploadFile: null,
       referenceImages: [],
       results: [],
+      currentUsageId: "",
+      feedbackSelections: {},
       resultType: "image",
       favorites: [],
       assetFilters: [{ id: 'all', name: '全部' }, { id: 'image', name: '图片' }, { id: 'gif', name: 'GIF' }, { id: 'video', name: '视频' }, { id: 'text', name: '文案' }],
@@ -837,6 +842,7 @@ export default {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '文案生成失败');
         this.copyResult = data.copy;
+        this.copyUsageId = data.usageId || '';
         this.trackEvent('generation_success', { type: 'copy' })
         if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
       } catch (error) { this.copyError = error.message; await this.loadProfile().catch(() => {}); }
@@ -846,6 +852,17 @@ export default {
       await navigator.clipboard.writeText(`【AI生成内容】\n${this.copyResult}`);
       this.copyCopied = true;
       setTimeout(() => { this.copyCopied = false; }, 1500);
+    },
+    async sendGenerationFeedback(usageId, helpful) {
+      if (!usageId || !this.session) return;
+      let reason = '';
+      if (!helpful) reason = window.prompt('哪里不满意？可选填，例如：不符合商品、画面变形、文字质量差') || '';
+      try {
+        const response = await fetch(`/api/usage/${usageId}/feedback`, { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ helpful, reason }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '提交评价失败');
+        this.$set(this.feedbackSelections, usageId, helpful);
+      } catch (error) { this.errorMessage = error.message; }
     },
     async logout() { if (supabase) await supabase.auth.signOut() },
     go(p) {
@@ -1115,6 +1132,7 @@ export default {
         this.results = this.page === 'video'
           ? (this.videoMode === 'image' ? (data.gifs || []) : (data.videos || []))
           : data.images;
+        this.currentUsageId = data.usageId || '';
         this.trackEvent('generation_success', { type: this.page === 'video' ? (this.videoMode === 'image' ? 'gif' : 'video') : (this.referenceImages.length ? 'image_edit' : 'image') })
         this.resultType = this.page === 'video'
           ? (this.videoMode === 'image' ? 'gif' : 'video')

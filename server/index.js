@@ -576,6 +576,29 @@ app.get('/api/admin/usage', requireUser, requireAdmin, async (req, res, next) =>
   } catch (error) { next(error) }
 })
 
+app.post('/api/usage/:id/feedback', requireUser, async (req, res, next) => {
+  try {
+    if (typeof req.body.helpful !== 'boolean') return res.status(400).json({ error: '请选择有帮助或不满意' })
+    const { data: usage, error: usageError } = await supabaseAdmin().from('usage_records').select('id,user_id,status').eq('id', req.params.id).eq('user_id', req.user.id).single()
+    if (usageError) throw usageError
+    if (usage.status !== 'completed') return res.status(409).json({ error: '只有成功生成的内容可以评价' })
+    const values = { usage_id: usage.id, user_id: req.user.id, helpful: req.body.helpful, reason: String(req.body.reason || '').trim().slice(0, 300) || null, updated_at: new Date().toISOString() }
+    const { data, error } = await supabaseAdmin().from('generation_feedback').upsert(values, { onConflict: 'usage_id' }).select('id,usage_id,helpful,reason,updated_at').single()
+    if (error) throw error
+    res.json({ feedback: data })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/generation-feedback', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('generation_feedback').select('id,usage_id,user_id,helpful,reason,created_at,usage_records(action,prompt)').order('created_at', { ascending: false }).limit(200)
+    if (error) throw error
+    const userIds = [...new Set((data || []).map(item => item.user_id))]; const { data: users } = userIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', userIds) : { data: [] }; const emails = new Map((users || []).map(item => [item.id,item.email]))
+    const total = data?.length || 0; const helpful = (data || []).filter(item => item.helpful).length
+    res.json({ stats: { total, helpful, unhelpful: total-helpful, satisfactionRate: total ? Math.round(helpful / total * 1000) / 10 : 0 }, feedback: (data || []).map(item => ({ ...item, action: item.usage_records?.action || '', prompt: item.usage_records?.prompt || '', email: emails.get(item.user_id) || '' })) })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/admin/audit-logs', requireUser, requireAdmin, async (_req, res, next) => {
   try {
     const { data: logs, error } = await supabaseAdmin().from('admin_audit_logs').select('id,admin_id,action,target_type,target_id,details,ip_address,created_at').order('created_at', { ascending: false }).limit(200)
@@ -1302,7 +1325,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (saveCopyError) console.error('[archive-copy]', usageId, saveCopyError.message)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ copy, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ copy, usageId, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1377,7 +1400,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ images: storedImages, usageId, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1401,7 +1424,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ images: storedImages, usageId, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1423,7 +1446,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     const payload = mode === 'image' ? { gifs: storedOutputs } : { videos: storedOutputs }
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ ...payload, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ ...payload, usageId, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
