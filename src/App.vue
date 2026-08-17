@@ -367,7 +367,7 @@
         <div class="support-composer"><textarea v-model="supportDraft" maxlength="2000" placeholder="请输入你的问题…" @keydown.ctrl.enter.prevent="sendSupportMessage"></textarea><button :disabled="supportSending || !supportDraft.trim()" @click="sendSupportMessage">{{ supportSending ? '发送中…' : '发送' }}</button></div>
       </section>
     </div>
-    <AuthModal v-if="authReady && !session && authOpen" @close="authOpen = false" />
+    <AuthModal v-if="authReady && (passwordRecovery || (!session && authOpen))" :recovery-mode="passwordRecovery" @close="closeAuthModal" @recovered="finishPasswordRecovery" />
     <div
       class="overlay"
       :class="{ show: menuOpen }"
@@ -459,6 +459,7 @@ export default {
       errorMessage: "",
       authReady: false,
       authOpen: false,
+      passwordRecovery: window.location.hash.includes('type=recovery'),
       session: null,
       profile: null,
       authSubscription: null,
@@ -594,7 +595,8 @@ export default {
     const { data } = await supabase.auth.getSession()
     this.session = data.session
     if (this.session) { await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); }
-    const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'PASSWORD_RECOVERY') this.passwordRecovery = true
       this.session = session
       this.profile = null
       if (session) { this.authOpen = false; await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); }
@@ -613,6 +615,8 @@ export default {
       this.authOpen = true
       return false
     },
+    async closeAuthModal() { if (this.passwordRecovery && supabase) await supabase.auth.signOut(); this.passwordRecovery = false; this.authOpen = false; },
+    finishPasswordRecovery() { this.passwordRecovery = false; this.authOpen = false; window.history.replaceState({}, document.title, window.location.pathname + window.location.search); },
     async loadProfile() {
       try {
         const response = await fetch('/api/me', { headers: this.authHeaders() })
