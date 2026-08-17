@@ -44,7 +44,7 @@
         <div class="top-actions">
           <button v-if="session" class="credit-pill"><span>✦</span> {{ credits }} 点</button>
           <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
-          <button class="ghost-btn">帮助中心</button
+          <button class="ghost-btn" @click="openSupport">帮助中心</button
           ><button class="primary-small" @click="openRecharge">获取算力</button>
         </div>
       </header>
@@ -282,6 +282,18 @@
         <div v-else class="history-empty">暂时没有生成记录，完成第一次创作后会显示在这里。</div>
       </section>
     </div>
+    <div v-if="supportOpen" class="recharge-overlay" @click.self="closeSupport">
+      <section class="support-modal">
+        <header><div><h2>人工客服</h2><p>请描述遇到的问题，客服会在后台回复</p></div><button @click="closeSupport">×</button></header>
+        <div ref="supportMessages" class="support-messages">
+          <div v-if="supportLoading" class="history-loading">正在读取消息…</div>
+          <div v-else-if="!supportMessages.length" class="support-welcome"><b>你好，有什么可以帮你？</b><p>可以咨询充值、算力、生成失败或作品保存等问题。</p></div>
+          <article v-for="message in supportMessages" :key="message.id" :class="message.sender_role"><div><b>{{ message.sender_role === 'admin' ? '人工客服' : '我' }}</b><p>{{ message.content }}</p><small>{{ formatHistoryDate(message.created_at) }}</small></div></article>
+        </div>
+        <p v-if="supportError" class="api-error">{{ supportError }}</p>
+        <div class="support-composer"><textarea v-model="supportDraft" maxlength="2000" placeholder="请输入你的问题…" @keydown.ctrl.enter.prevent="sendSupportMessage"></textarea><button :disabled="supportSending || !supportDraft.trim()" @click="sendSupportMessage">{{ supportSending ? '发送中…' : '发送' }}</button></div>
+      </section>
+    </div>
     <AuthModal v-if="authReady && !session" />
     <div
       class="overlay"
@@ -385,6 +397,13 @@ export default {
       historyError: "",
       copiedHistoryId: "",
       historyOnlyCopy: false,
+      supportOpen: false,
+      supportLoading: false,
+      supportSending: false,
+      supportMessages: [],
+      supportDraft: "",
+      supportError: "",
+      supportTimer: null,
     };
   },
   computed: {
@@ -445,6 +464,7 @@ export default {
   },
   beforeDestroy() {
     this.authSubscription?.unsubscribe()
+    if (this.supportTimer) clearInterval(this.supportTimer)
     this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
@@ -511,6 +531,35 @@ export default {
     async copyHistoryText(record) {
       await navigator.clipboard.writeText(record.output_text || ''); this.copiedHistoryId = record.id;
       setTimeout(() => { if (this.copiedHistoryId === record.id) this.copiedHistoryId = ''; }, 1500);
+    },
+    async openSupport() {
+      if (!this.session) { this.errorMessage = '请先登录后联系人工客服'; return; }
+      this.supportOpen = true; this.supportLoading = true; this.supportError = '';
+      await this.loadSupportMessages(); this.supportLoading = false;
+      if (this.supportTimer) clearInterval(this.supportTimer)
+      this.supportTimer = setInterval(() => { if (this.supportOpen && !this.supportSending) this.loadSupportMessages(false) }, 10000)
+    },
+    closeSupport() {
+      this.supportOpen = false; if (this.supportTimer) clearInterval(this.supportTimer); this.supportTimer = null;
+    },
+    async loadSupportMessages(showError = true) {
+      try {
+        const response = await fetch('/api/support/conversation', { headers: this.authHeaders() }); const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取客服消息失败');
+        this.supportMessages = data.messages || [];
+        this.$nextTick(() => { const box = this.$refs.supportMessages; if (box) box.scrollTop = box.scrollHeight; });
+      } catch (error) { if (showError) this.supportError = error.message; }
+    },
+    async sendSupportMessage() {
+      const content = this.supportDraft.trim(); if (!content || this.supportSending) return;
+      this.supportSending = true; this.supportError = '';
+      try {
+        const response = await fetch('/api/support/messages', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ content }) }); const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '消息发送失败');
+        this.supportMessages.push(data.message); this.supportDraft = '';
+        this.$nextTick(() => { const box = this.$refs.supportMessages; if (box) box.scrollTop = box.scrollHeight; });
+      } catch (error) { this.supportError = error.message; }
+      finally { this.supportSending = false; }
     },
     async generateCopy() {
       if (this.copyLoading) return;
@@ -673,5 +722,6 @@ export default {
 .recharge-overlay{position:fixed;inset:0;z-index:100;background:#11131a99;display:grid;place-items:center;padding:20px}.recharge-modal{width:min(820px,100%);max-height:92vh;overflow:auto;padding:25px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.recharge-modal>header{display:flex;justify-content:space-between;align-items:flex-start}.recharge-modal h2{margin:0 0 6px}.recharge-modal header p{margin:0;color:#858993;font-size:12px}.recharge-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.package-grid{margin:22px 0;display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.package-grid button{position:relative;min-height:142px;padding:17px 8px 12px;border:1px solid #e9eaf0;border-radius:13px;background:#fff;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer}.package-grid button.selected{border:2px solid #7657ff;background:#f8f6ff}.package-grid button>em{position:absolute;top:-9px;padding:3px 9px;border-radius:10px;background:#7657ff;color:#fff;font-size:9px;font-style:normal}.package-grid strong{font-size:22px}.package-grid span{color:#7657ff;font-size:12px}.package-grid small{color:#999;font-size:9px}.payment-box{padding:20px;border-radius:13px;background:#f7f7fa;display:flex;gap:24px;align-items:center}.payment-qr-link{flex:0 0 240px;display:flex;flex-direction:column;align-items:center;gap:7px;color:#7657ff;text-decoration:none;font-size:11px}.payment-qr-link img{width:240px;height:240px;padding:6px;object-fit:contain;background:#fff;border-radius:10px;box-shadow:0 4px 16px #2221}.payment-qr-link small{font-size:10px}.payment-box>div{flex:1}.payment-box p{margin:7px 0;color:#777b85;font-size:11px}.payment-box input{width:100%;height:38px;padding:0 11px;border:1px solid #dddfe6;border-radius:9px;background:#fff}.recharge-success{color:#17894c;font-size:12px}.order-list{margin-top:20px}.order-list h3{font-size:13px}.order-list>div{padding:9px 0;border-top:1px solid #eee;display:grid;grid-template-columns:1fr auto 60px;gap:10px;font-size:10px}.order-list em{text-align:right;font-style:normal}.order-list em.paid{color:#17894c}.order-list em.pending{color:#d38316}.order-list em.rejected{color:#d33}@media(max-width:700px){.package-grid{grid-template-columns:repeat(2,1fr)}.payment-box{align-items:stretch;flex-direction:column}.payment-qr-link{flex-basis:auto;align-self:center}.payment-qr-link img{width:min(280px,75vw);height:min(280px,75vw)}.order-list>div{grid-template-columns:1fr}.order-list em{text-align:left}}
 .history-modal{width:min(820px,100%);max-height:90vh;overflow:auto;padding:24px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.history-modal>header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:16px;border-bottom:1px solid #eee}.history-modal h2{margin:0 0 6px}.history-modal header p{margin:0;color:#858993;font-size:12px}.history-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.history-list article{padding:15px 0;border-bottom:1px solid #f0f1f4;display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center}.history-icon{width:42px;height:42px;border-radius:11px;background:#f0ecff;color:#7657ff;display:grid;place-items:center;font-weight:700}.history-info{min-width:0}.history-info>div{display:flex;align-items:center;gap:8px}.history-info em{padding:2px 7px;border-radius:8px;background:#fff3dc;color:#b36b00;font-size:9px;font-style:normal}.history-info em.completed{background:#eaf8ef;color:#17894c}.history-info em.failed{background:#fff0f0;color:#c44}.history-info p{margin:6px 0;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}.history-info small{color:#999;font-size:9px}.history-list article>strong{color:#7657ff;font-size:12px}.history-assets{grid-column:2/-1;display:grid;grid-template-columns:repeat(4,minmax(90px,1fr));gap:8px}.history-asset{position:relative;aspect-ratio:1;overflow:hidden;border-radius:10px;background:#17181d}.history-asset img,.history-asset video{width:100%;height:100%;object-fit:cover}.history-asset button{position:absolute;right:6px;bottom:6px;height:27px;padding:0 9px;border:0;border-radius:7px;background:#15161dcc;color:#fff;font-size:9px;cursor:pointer}.history-no-asset{grid-column:2/-1;margin:0;padding:10px;border-radius:8px;background:#f7f7f9;color:#999;font-size:10px}.history-loading,.history-empty{padding:70px 20px;text-align:center;color:#999;font-size:12px}@media(max-width:560px){.history-list article{grid-template-columns:36px 1fr}.history-icon{width:36px;height:36px}.history-list article>strong{grid-column:2}.history-assets{grid-column:1/-1;grid-template-columns:repeat(2,1fr)}.history-no-asset{grid-column:1/-1}}
 .history-copy-output{grid-column:2/-1;position:relative;padding:14px;border-radius:10px;background:#faf9ff;border:1px solid #eeebfa}.history-copy-output pre{max-height:240px;margin:0;padding-right:80px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.75 "PingFang SC","Microsoft YaHei",sans-serif}.history-copy-output button{position:absolute;right:10px;top:10px;height:28px;padding:0 10px;border:0;border-radius:7px;background:#7657ff;color:#fff;font-size:9px;cursor:pointer}@media(max-width:560px){.history-copy-output{grid-column:1/-1}.history-copy-output pre{padding-right:0;padding-top:35px}}
+.support-modal{width:min(640px,100%);height:min(720px,90vh);padding:22px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117;display:flex;flex-direction:column}.support-modal>header{display:flex;justify-content:space-between;padding-bottom:15px;border-bottom:1px solid #eee}.support-modal h2{margin:0 0 5px}.support-modal header p{margin:0;color:#858993;font-size:11px}.support-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.support-messages{flex:1;overflow:auto;padding:18px 4px;display:flex;flex-direction:column;gap:12px}.support-welcome{margin:auto;text-align:center;color:#777}.support-welcome p{font-size:11px}.support-messages article{display:flex}.support-messages article.user{justify-content:flex-end}.support-messages article>div{max-width:78%;padding:10px 12px;border-radius:12px;background:#f1f2f5}.support-messages article.user>div{background:#7657ff;color:#fff}.support-messages article b{font-size:10px}.support-messages article p{margin:5px 0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.55}.support-messages article small{font-size:8px;opacity:.65}.support-composer{padding-top:12px;border-top:1px solid #eee;display:flex;gap:9px}.support-composer textarea{flex:1;height:72px;padding:10px;border:1px solid #dfe1e7;border-radius:10px;resize:none;font:12px/1.5 inherit}.support-composer button{width:78px;border:0;border-radius:10px;background:#7657ff;color:#fff;cursor:pointer}.support-composer button:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:900px){.copywriter-view{grid-template-columns:1fr;height:auto}.copy-result-card{min-height:520px}}@media(max-width:560px){.copywriter-view{padding:10px}.copy-form-card,.copy-result-card{padding:16px}.copy-grid{grid-template-columns:1fr}}
 </style>

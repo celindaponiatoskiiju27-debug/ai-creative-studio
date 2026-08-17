@@ -11,6 +11,23 @@
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
+    <section class="support-admin-card">
+      <div class="admin-section-title"><div><h3>人工客服</h3><p>查看用户咨询并在站内回复</p></div><button @click="loadSupportConversations">刷新消息</button></div>
+      <div class="support-admin-layout">
+        <aside class="support-conversation-list">
+          <button v-for="item in supportConversations" :key="item.id" :class="{ active: selectedSupportId === item.id }" @click="selectSupportConversation(item)"><span><b>{{ item.email }}</b><small>{{ formatDate(item.last_message_at) }}</small></span><em v-if="item.unread_admin">{{ item.unread_admin }}</em></button>
+          <p v-if="!supportConversations.length">暂无客服会话</p>
+        </aside>
+        <div class="support-admin-thread">
+          <template v-if="selectedSupportId">
+            <div class="support-thread-head"><b>{{ selectedSupport && selectedSupport.email }}</b><button @click="toggleSupportStatus">{{ selectedSupport && selectedSupport.status === 'closed' ? '重新打开' : '结束会话' }}</button></div>
+            <div ref="adminSupportMessages" class="support-thread-messages"><article v-for="message in supportMessages" :key="message.id" :class="message.sender_role"><b>{{ message.sender_role === 'admin' ? '客服' : '用户' }}</b><p>{{ message.content }}</p><small>{{ formatDate(message.created_at) }}</small></article></div>
+            <div class="support-admin-composer"><textarea v-model="supportReply" maxlength="2000" placeholder="输入回复内容…" @keydown.ctrl.enter.prevent="sendSupportReply"></textarea><button :disabled="supportSending || !supportReply.trim()" @click="sendSupportReply">{{ supportSending ? '发送中…' : '回复' }}</button></div>
+          </template>
+          <div v-else class="admin-empty">请选择左侧用户会话</div>
+        </div>
+      </div>
+    </section>
     <section class="package-settings-card">
       <div class="admin-section-title"><div><h3>充值套餐设置</h3><p>修改后用户充值页面立即生效，无需重新部署</p></div><div class="section-actions"><button @click="addPackage">＋ 新增套餐</button><button class="secondary" @click="loadPackages">刷新</button></div></div>
       <div class="package-editor-grid">
@@ -73,12 +90,13 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], packages: [], packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
+  data: () => ({ users: [], orders: [], packages: [], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
-    totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) }
+    totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
+    selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) }
   },
-  mounted() { this.loadUsers(); this.loadOrders(); this.loadPackages(); this.loadPaymentSettings() },
+  mounted() { this.loadUsers(); this.loadOrders(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations() },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
     async loadUsers() {
@@ -97,6 +115,42 @@ export default {
         const data = await response.json()
         if (!response.ok) throw new Error(data.error || '读取充值订单失败')
         this.orders = data.orders || []
+      } catch (error) { this.errorMessage = error.message }
+    },
+    async loadSupportConversations() {
+      try {
+        const response = await fetch('/api/admin/support/conversations', { headers: this.headers() }); const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '读取客服会话失败')
+        this.supportConversations = data.conversations || []
+      } catch (error) { this.errorMessage = error.message }
+    },
+    async selectSupportConversation(item) {
+      this.selectedSupportId = item.id; item.unread_admin = 0; this.errorMessage = ''
+      try {
+        const response = await fetch(`/api/admin/support/conversations/${item.id}/messages`, { headers: this.headers() }); const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '读取客服消息失败')
+        this.supportMessages = data.messages || []
+        this.$nextTick(() => { const box = this.$refs.adminSupportMessages; if (box) box.scrollTop = box.scrollHeight })
+      } catch (error) { this.errorMessage = error.message }
+    },
+    async sendSupportReply() {
+      const content = this.supportReply.trim(); if (!content || !this.selectedSupportId || this.supportSending) return
+      this.supportSending = true; this.errorMessage = ''
+      try {
+        const response = await fetch(`/api/admin/support/conversations/${this.selectedSupportId}/messages`, { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ content }) }); const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '回复发送失败')
+        this.supportMessages.push(data.message); this.supportReply = ''
+        this.$nextTick(() => { const box = this.$refs.adminSupportMessages; if (box) box.scrollTop = box.scrollHeight })
+      } catch (error) { this.errorMessage = error.message }
+      finally { this.supportSending = false }
+    },
+    async toggleSupportStatus() {
+      if (!this.selectedSupport) return
+      const status = this.selectedSupport.status === 'closed' ? 'open' : 'closed'
+      try {
+        const response = await fetch(`/api/admin/support/conversations/${this.selectedSupportId}`, { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ status }) }); const data = await response.json()
+        if (!response.ok) throw new Error(data.error || '更新会话状态失败')
+        this.selectedSupport.status = data.conversation.status
       } catch (error) { this.errorMessage = error.message }
     },
     async loadPaymentSettings() {

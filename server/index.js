@@ -448,6 +448,82 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/support/conversations', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const { data: conversations, error } = await supabaseAdmin().from('support_conversations').select('*').order('last_message_at', { ascending: false }).limit(200)
+    if (error) throw error
+    const userIds = conversations.map(item => item.user_id)
+    const { data: profiles, error: profileError } = userIds.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', userIds) : { data: [], error: null }
+    if (profileError) throw profileError
+    const emails = new Map(profiles.map(item => [item.id, item.email]))
+    res.json({ conversations: conversations.map(item => ({ ...item, email: emails.get(item.user_id) || '未知用户' })) })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/support/conversations/:id/messages', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const { data: messages, error } = await supabaseAdmin().from('support_messages').select('id,sender_role,content,created_at').eq('conversation_id', req.params.id).order('created_at').limit(500)
+    if (error) throw error
+    await supabaseAdmin().from('support_conversations').update({ unread_admin: 0, updated_at: new Date().toISOString() }).eq('id', req.params.id)
+    res.json({ messages })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/support/conversations/:id/messages', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const content = String(req.body.content || '').trim()
+    if (!content || content.length > 2000) return res.status(400).json({ error: '回复内容应为1至2000个字符' })
+    const { data: conversation, error } = await supabaseAdmin().from('support_conversations').select('*').eq('id', req.params.id).single()
+    if (error) throw error
+    const { data: message, error: messageError } = await supabaseAdmin().from('support_messages').insert({ conversation_id: conversation.id, sender_id: req.user.id, sender_role: 'admin', content }).select('id,sender_role,content,created_at').single()
+    if (messageError) throw messageError
+    await supabaseAdmin().from('support_conversations').update({ status: 'open', unread_user: conversation.unread_user + 1, unread_admin: 0, last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', conversation.id)
+    res.status(201).json({ message })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/support/conversations/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const status = req.body.status === 'closed' ? 'closed' : 'open'
+    const { data, error } = await supabaseAdmin().from('support_conversations').update({ status, updated_at: new Date().toISOString() }).eq('id', req.params.id).select('*').single()
+    if (error) throw error
+    res.json({ conversation: data })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/support/conversation', requireUser, async (req, res, next) => {
+  try {
+    const { data: conversation, error } = await supabaseAdmin().from('support_conversations').select('*').eq('user_id', req.user.id).maybeSingle()
+    if (error) throw error
+    if (!conversation) return res.json({ conversation: null, messages: [] })
+    const { data: messages, error: messageError } = await supabaseAdmin().from('support_messages').select('id,sender_role,content,created_at').eq('conversation_id', conversation.id).order('created_at').limit(200)
+    if (messageError) throw messageError
+    if (conversation.unread_user) await supabaseAdmin().from('support_conversations').update({ unread_user: 0, updated_at: new Date().toISOString() }).eq('id', conversation.id)
+    res.json({ conversation: { ...conversation, unread_user: 0 }, messages })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/support/messages', requireUser, async (req, res, next) => {
+  try {
+    const content = String(req.body.content || '').trim()
+    if (!content || content.length > 2000) return res.status(400).json({ error: '消息内容应为1至2000个字符' })
+    let { data: conversation, error } = await supabaseAdmin().from('support_conversations').select('*').eq('user_id', req.user.id).maybeSingle()
+    if (error) throw error
+    if (!conversation) {
+      const created = await supabaseAdmin().from('support_conversations').insert({ user_id: req.user.id, unread_admin: 1 }).select('*').single()
+      if (created.error) throw created.error
+      conversation = created.data
+    } else {
+      const updated = await supabaseAdmin().from('support_conversations').update({ status: 'open', unread_admin: conversation.unread_admin + 1, last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', conversation.id).select('*').single()
+      if (updated.error) throw updated.error
+      conversation = updated.data
+    }
+    const { data: message, error: messageError } = await supabaseAdmin().from('support_messages').insert({ conversation_id: conversation.id, sender_id: req.user.id, sender_role: 'user', content }).select('id,sender_role,content,created_at').single()
+    if (messageError) throw messageError
+    res.status(201).json({ conversation, message })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/admin/recharge-orders', requireUser, requireAdmin, async (req, res, next) => {
   try {
     let query = supabaseAdmin().from('recharge_orders').select('id,order_no,user_id,package_id,amount_fen,credits,payment_reference,status,created_at,paid_at').order('created_at', { ascending: false }).limit(200)
