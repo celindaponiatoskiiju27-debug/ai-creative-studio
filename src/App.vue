@@ -43,6 +43,7 @@
         </div>
         <div class="top-actions">
           <button v-if="session" class="credit-pill"><span>✦</span> {{ credits }} 点</button>
+          <button v-if="session" class="ghost-btn" @click="openInvite">邀请好友</button>
           <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
           <button v-else class="ghost-btn" @click="requestLogin('登录后可使用完整功能')">登录 / 注册</button>
           <button class="ghost-btn" @click="openSupport">帮助中心</button
@@ -300,6 +301,15 @@
         <button class="primary-small" @click="go('image')">返回创作</button>
       </section>
     </main>
+    <div v-if="inviteOpen" class="recharge-overlay" @click.self="inviteOpen = false">
+      <section class="invite-modal">
+        <header><div><h2>邀请好友，双方得算力</h2><p>好友通过你的链接注册并完成首次生成后发放奖励</p></div><button @click="inviteOpen = false">×</button></header>
+        <div class="invite-code-box"><span>我的邀请码</span><strong>{{ inviteData.code || '读取中…' }}</strong><button @click="copyInviteLink">{{ inviteCopied ? '已复制邀请链接' : '复制邀请链接' }}</button></div>
+        <div v-if="inviteData.settings" class="invite-rules"><div><b>＋{{ inviteData.settings.inviter_reward }}</b><span>邀请人奖励</span></div><div><b>＋{{ inviteData.settings.invitee_reward }}</b><span>好友奖励</span></div><div><b>{{ inviteData.settings.per_inviter_monthly_limit }} 人</b><span>每月奖励上限</span></div></div>
+        <p class="invite-note">为控制刷号与预算，只有好友完成首次成功生成才会发放；达到平台月度预算后将停止发放。</p>
+        <div class="invite-list"><h3>邀请记录</h3><div v-for="item in inviteData.referrals || []" :key="item.id"><span>{{ formatHistoryDate(item.created_at) }}</span><b>{{ referralStatus(item.status) }}</b><em v-if="item.status === 'rewarded'">＋{{ item.inviter_reward }} 点</em></div><p v-if="!(inviteData.referrals || []).length">还没有邀请记录，复制链接发给朋友吧。</p></div>
+      </section>
+    </div>
     <div v-if="rechargeOpen" class="recharge-overlay" @click.self="rechargeOpen = false">
       <section class="recharge-modal">
         <header><div><h2>充值算力</h2><p>选择适合你的套餐，充值算力长期有效</p></div><button @click="rechargeOpen = false">×</button></header>
@@ -472,6 +482,10 @@ export default {
       supportDraft: "",
       supportError: "",
       supportTimer: null,
+      inviteOpen: false,
+      inviteLoading: false,
+      inviteCopied: false,
+      inviteData: { referrals: [] },
       designPresets: [
         { id: 'taobao', name: '淘宝主图', width: 800, height: 800 },
         { id: 'redbook', name: '小红书封面', width: 900, height: 1200 },
@@ -611,6 +625,17 @@ export default {
       if (!response.ok) throw new Error(data.error || '读取收藏失败');
       this.favorites = data.favorites || [];
     },
+    async openInvite() {
+      if (!this.session) { this.requestLogin('请先登录后邀请好友'); return; }
+      this.inviteOpen = true; this.inviteLoading = true;
+      try { const response = await fetch('/api/referrals/me', { headers: this.authHeaders() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取邀请信息失败'); this.inviteData = data; }
+      catch (error) { this.errorMessage = error.message; }
+      finally { this.inviteLoading = false; }
+    },
+    async copyInviteLink() {
+      const link = `${window.location.origin}/?ref=${encodeURIComponent(this.inviteData.code || '')}`; await navigator.clipboard.writeText(link); this.inviteCopied = true; setTimeout(() => { this.inviteCopied = false; }, 1500);
+    },
+    referralStatus(status) { return ({ pending: '待好友首次生成', rewarded: '奖励已发放', budget_limited: '已达预算上限', disabled: '活动已关闭' })[status] || status; },
     async loadAssetPage(page) {
       if (!this.session) { this.requestLogin('请先登录后查看个人资产'); return; }
       this.assetLoading = true; this.assetError = '';

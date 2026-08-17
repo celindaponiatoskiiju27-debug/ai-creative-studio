@@ -9,6 +9,7 @@
       <input v-model.trim="email" type="email" autocomplete="email" placeholder="name@example.com" required />
       <label>密码</label>
       <input v-model="password" type="password" :autocomplete="registerMode ? 'new-password' : 'current-password'" minlength="6" placeholder="至少 6 位密码" required />
+      <template v-if="registerMode"><label>邀请码 <small>选填</small></label><input v-model.trim="inviteCode" maxlength="16" placeholder="有邀请码可填写" /></template>
       <button class="auth-submit" :disabled="loading">{{ loading ? '请稍候…' : (registerMode ? '注册' : '登录') }}</button>
       <p v-if="message" class="auth-message" :class="{ error: isError }">{{ message }}</p>
       <button type="button" class="auth-switch" @click="switchMode">
@@ -23,7 +24,7 @@ import { supabase, supabaseConfigured } from './supabase'
 
 export default {
   name: 'AuthModal',
-  data: () => ({ email: '', password: '', registerMode: false, loading: false, message: '', isError: false }),
+  data: () => ({ email: '', password: '', inviteCode: new URLSearchParams(window.location.search).get('ref') || localStorage.getItem('lingjing-invite-code') || '', registerMode: Boolean(new URLSearchParams(window.location.search).get('ref')), loading: false, message: '', isError: false }),
   methods: {
     switchMode() { this.registerMode = !this.registerMode; this.message = '' },
     async submit() {
@@ -36,7 +37,7 @@ export default {
           const response = await fetch('/api/auth/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: this.email, password: this.password })
+            body: JSON.stringify({ email: this.email, password: this.password, inviteCode: this.inviteCode })
           })
           const result = await response.json()
           if (!response.ok) throw new Error(result.error || '注册失败')

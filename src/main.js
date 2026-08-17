@@ -8,5 +8,6 @@ import './motion.css'
 import './admin.css'
 import './canvas.css'
 import './assets.css'
+import './referrals.css'
 Vue.config.productionTip=false
 new Vue({render:h=>h(App)}).$mount('#app')

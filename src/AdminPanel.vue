@@ -11,6 +11,12 @@
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
       <article><span>累计消耗算力</span><b>{{ totalCredits }}</b></article>
     </div>
+    <section class="referral-admin-card">
+      <div class="admin-section-title"><div><h3>邀请奖励与预算</h3><p>控制双方奖励、每月总预算和单个邀请人的奖励人数</p></div><button @click="loadReferrals">刷新记录</button></div>
+      <div class="referral-admin-stats"><div><span>邀请总数</span><b>{{ referralStats.total || 0 }}</b></div><div><span>已发奖励</span><b>{{ referralStats.rewarded || 0 }}</b></div><div><span>本月已用预算</span><b>{{ referralStats.monthSpent || 0 }} 点</b></div><div><span>本月剩余预算</span><b>{{ Math.max(0, (referralSettings.monthly_budget || 0) - (referralStats.monthSpent || 0)) }} 点</b></div></div>
+      <div class="referral-settings-form"><label><input v-model="referralSettings.active" type="checkbox" /> 启用邀请活动</label><label>邀请人奖励<input v-model.number="referralSettings.inviter_reward" type="number" min="0" step="1" /></label><label>好友奖励<input v-model.number="referralSettings.invitee_reward" type="number" min="0" step="1" /></label><label>全站每月预算<input v-model.number="referralSettings.monthly_budget" type="number" min="0" step="1" /></label><label>每人每月奖励人数<input v-model.number="referralSettings.per_inviter_monthly_limit" type="number" min="0" step="1" /></label><button :disabled="referralSaving" @click="saveReferralSettings">{{ referralSaving ? '保存中…' : '保存邀请设置' }}</button></div>
+      <div class="referral-records"><div v-for="item in referrals" :key="item.id"><span><b>{{ item.inviter_email }}</b> 邀请 {{ item.invitee_email }}</span><em>{{ item.status }}</em><strong>{{ item.status === 'rewarded' ? `-${item.inviter_reward + item.invitee_reward} 点预算` : '未发放' }}</strong><small>{{ formatDate(item.created_at) }}</small></div><p v-if="!referrals.length">暂无邀请记录</p></div>
+    </section>
     <section class="support-admin-card">
       <div class="admin-section-title"><div><h3>人工客服</h3><p>查看用户咨询并在站内回复</p></div><button @click="loadSupportConversations">刷新消息</button></div>
       <div class="support-admin-layout">
@@ -90,15 +96,25 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], packages: [], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
+  data: () => ({ users: [], orders: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '' }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
     selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) }
   },
-  mounted() { this.loadUsers(); this.loadOrders(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations() },
+  mounted() { this.loadUsers(); this.loadOrders(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals() },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
+    async loadReferrals() {
+      try { const response = await fetch('/api/admin/referrals', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取邀请记录失败'); this.referrals = data.referrals || []; this.referralSettings = data.settings || {}; this.referralStats = data.stats || {}; }
+      catch (error) { this.errorMessage = error.message }
+    },
+    async saveReferralSettings() {
+      this.referralSaving = true; this.errorMessage = ''
+      try { const response = await fetch('/api/admin/referral-settings', { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(this.referralSettings) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存邀请设置失败'); this.referralSettings = data.settings; await this.loadReferrals(); }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.referralSaving = false }
+    },
     async loadUsers() {
       this.loading = true; this.errorMessage = ''
       try {

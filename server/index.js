@@ -335,6 +335,10 @@ async function finishGeneration(usageId, success) {
   if (!usageId) return
   const { error } = await supabaseAdmin().rpc('finish_generation', { p_usage_id: usageId, p_success: success })
   if (error) throw error
+  if (success) {
+    const { error: referralError } = await supabaseAdmin().rpc('complete_referral_reward', { p_usage_id: usageId })
+    if (referralError && !/complete_referral_reward/i.test(referralError.message)) console.error('[referral-reward]', referralError.message)
+  }
 }
 
 function allowRegistration(ip) {
@@ -387,12 +391,20 @@ app.post('/api/auth/register', async (req, res, next) => {
     if (!allowRegistration(req.ip)) return res.status(429).json({ error: '注册过于频繁，请稍后再试' })
     const email = String(req.body.email || '').trim().toLowerCase()
     const password = String(req.body.password || '')
+    const inviteCode = String(req.body.inviteCode || '').trim().toUpperCase()
     if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: '请输入有效邮箱' })
     if (password.length < 6) return res.status(400).json({ error: '密码至少需要 6 位' })
     const { data, error } = await supabaseAdmin().auth.admin.createUser({ email, password, email_confirm: true })
     if (error) {
       if (/already|registered|exists/i.test(error.message)) return res.status(409).json({ error: '该邮箱已经注册，请直接登录' })
       throw error
+    }
+    if (inviteCode) {
+      const { data: inviter } = await supabaseAdmin().from('profiles').select('id,referral_code').eq('referral_code', inviteCode).maybeSingle()
+      if (inviter && inviter.id !== data.user.id) {
+        const { error: referralError } = await supabaseAdmin().from('referrals').insert({ inviter_id: inviter.id, invitee_id: data.user.id, invite_code: inviteCode })
+        if (referralError) console.error('[referral-register]', referralError.message)
+      }
     }
     res.status(201).json({ user: { id: data.user.id, email: data.user.email } })
   } catch (error) { next(error) }
@@ -456,6 +468,45 @@ app.post('/api/admin/users/:id/credits', requireUser, requireAdmin, async (req, 
     })
     if (error) throw error
     res.json({ credits: data })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/referrals/me', requireUser, async (req, res, next) => {
+  try {
+    const [{ data: profile, error: profileError }, { data: settings, error: settingsError }, { data: referrals, error: referralsError }] = await Promise.all([
+      supabaseAdmin().from('profiles').select('referral_code').eq('id', req.user.id).single(),
+      supabaseAdmin().from('referral_settings').select('active,inviter_reward,invitee_reward,per_inviter_monthly_limit').eq('id', true).single(),
+      supabaseAdmin().from('referrals').select('id,status,inviter_reward,invitee_reward,rewarded_at,created_at').eq('inviter_id', req.user.id).order('created_at', { ascending: false }).limit(100)
+    ])
+    if (profileError) throw profileError; if (settingsError) throw settingsError; if (referralsError) throw referralsError
+    res.json({ code: profile.referral_code, settings, referrals: referrals || [] })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/referrals', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const monthStart = new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0)
+    const [{ data: settings, error: settingsError }, { data: referrals, error: referralsError }] = await Promise.all([
+      supabaseAdmin().from('referral_settings').select('*').eq('id', true).single(),
+      supabaseAdmin().from('referrals').select('id,inviter_id,invitee_id,invite_code,status,inviter_reward,invitee_reward,rewarded_at,created_at').order('created_at', { ascending: false }).limit(200)
+    ])
+    if (settingsError) throw settingsError; if (referralsError) throw referralsError
+    const ids = [...new Set((referrals || []).flatMap(item => [item.inviter_id, item.invitee_id]))]
+    const { data: profiles, error: profilesError } = ids.length ? await supabaseAdmin().from('profiles').select('id,email').in('id', ids) : { data: [], error: null }
+    if (profilesError) throw profilesError
+    const emails = new Map((profiles || []).map(item => [item.id, item.email]))
+    const monthRewarded = (referrals || []).filter(item => item.status === 'rewarded' && new Date(item.rewarded_at) >= monthStart)
+    res.json({ settings, stats: { total: referrals?.length || 0, rewarded: referrals?.filter(item => item.status === 'rewarded').length || 0, monthSpent: monthRewarded.reduce((sum, item) => sum + item.inviter_reward + item.invitee_reward, 0) }, referrals: (referrals || []).map(item => ({ ...item, inviter_email: emails.get(item.inviter_id), invitee_email: emails.get(item.invitee_id) })) })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/referral-settings', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const values = { active: req.body.active === true, inviter_reward: Number(req.body.inviter_reward), invitee_reward: Number(req.body.invitee_reward), monthly_budget: Number(req.body.monthly_budget), per_inviter_monthly_limit: Number(req.body.per_inviter_monthly_limit), updated_at: new Date().toISOString() }
+    if (![values.inviter_reward, values.invitee_reward, values.monthly_budget, values.per_inviter_monthly_limit].every(value => Number.isInteger(value) && value >= 0 && value <= 1000000)) return res.status(400).json({ error: '邀请奖励和预算必须是非负整数' })
+    const { data, error } = await supabaseAdmin().from('referral_settings').update(values).eq('id', true).select('*').single()
+    if (error) throw error
+    res.json({ settings: data })
   } catch (error) { next(error) }
 })
 
