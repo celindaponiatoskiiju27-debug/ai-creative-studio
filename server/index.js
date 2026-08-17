@@ -24,7 +24,7 @@ const upload = multer({
 app.use(cors({ origin: ['http://localhost:5174', 'http://127.0.0.1:5174'] }))
 app.use(express.json({ limit: '1mb' }))
 
-const CREDIT_PRICES = Object.freeze({ copy: 1, image: 2, imageEdit: 3, gif: 6, video: 25 })
+const CREDIT_PRICES = Object.freeze({ copy: 1, enhance: 1, image: 2, imageEdit: 3, gif: 6, video: 25 })
 const CREDIT_PACKAGES = Object.freeze([
   { id: 'trial', name: '首充体验', priceFen: 190, credits: 10, firstPurchaseOnly: true },
   { id: 'starter', name: '入门套餐', priceFen: 990, credits: 60 },
@@ -65,6 +65,17 @@ function client() {
 
 let supabaseInstance
 const registrationAttempts = new Map()
+const promptEnhanceAttempts = new Map()
+
+function allowPromptEnhance(userId) {
+  const now = Date.now()
+  const recent = (promptEnhanceAttempts.get(userId) || []).filter(time => now - time < 60_000)
+  if (recent.length >= 10) return false
+  recent.push(now)
+  promptEnhanceAttempts.set(userId, recent)
+  return true
+}
+
 function supabaseAdmin() {
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     const error = new Error('服务端尚未配置 Supabase')
@@ -746,10 +757,26 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
 })
 
 app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
+  let usageId
   try {
+    if (!allowPromptEnhance(req.user.id)) return res.status(429).json({ error: 'AI 润色操作过于频繁，请一分钟后再试' })
     const prompt = String(req.body.prompt || '').trim()
     if (!prompt) return res.status(400).json({ error: '请先输入需要润色的画面描述' })
     if (prompt.length > 1000) return res.status(400).json({ error: '画面描述不能超过 1000 字' })
+
+    const dateParts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).formatToParts(new Date()).filter(part => part.type !== 'literal').map(part => [part.type, part.value]))
+    const dayStart = new Date(`${dateParts.year}-${dateParts.month}-${dateParts.day}T00:00:00+08:00`).toISOString()
+    const { count: usedToday, error: countError } = await supabaseAdmin().from('usage_records')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id)
+      .eq('action', 'prompt_enhance')
+      .gte('created_at', dayStart)
+      .in('status', ['pending', 'completed'])
+    if (countError) throw countError
+    const chargedCredits = (usedToday || 0) < 3 ? 0 : CREDIT_PRICES.enhance
+    usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'prompt_enhance' }, chargedCredits, 1)
 
     const stream = await textClient().responses.create({
       model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
@@ -768,8 +795,19 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
     }
     enhancedPrompt = enhancedPrompt.trim() || responseText(completedResponse)
     if (!enhancedPrompt) throw new Error(completedResponse?.error?.message || 'AI 未返回润色内容')
-    res.json({ prompt: enhancedPrompt, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4' })
-  } catch (error) { next(error) }
+    await finishGeneration(usageId, true)
+    const profile = await profileFor(req.user.id)
+    res.json({
+      prompt: enhancedPrompt,
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+      credits: profile.credits,
+      chargedCredits,
+      freeRemaining: Math.max(0, 2 - (usedToday || 0))
+    })
+  } catch (error) {
+    if (usageId) await finishGeneration(usageId, false).catch(refundError => console.error('[refund]', refundError.message))
+    next(error)
+  }
 })
 
 app.post('/api/images/generate', requireUser, async (req, res, next) => {

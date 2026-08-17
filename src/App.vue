@@ -96,7 +96,7 @@
           </div>
           <div class="field">
             <div class="field-label">
-              <label>画面描述</label><button type="button" :disabled="enhanceLoading" :aria-busy="enhanceLoading ? 'true' : 'false'" @click="enhance"><span v-if="enhanceLoading" class="button-spinner" aria-hidden="true"></span>{{ enhanceLoading ? '润色中…' : '✦ AI 润色' }}</button>
+              <label>画面描述</label><button type="button" title="每天前 3 次免费，之后每次消耗 1 点算力" :disabled="enhanceLoading" :aria-busy="enhanceLoading ? 'true' : 'false'" @click="enhance"><span v-if="enhanceLoading" class="button-spinner" aria-hidden="true"></span>{{ enhanceLoading ? '润色中…' : '✦ AI 润色（每日3次免费）' }}</button>
             </div>
             <div class="prompt-box">
               <textarea
@@ -447,7 +447,8 @@ export default {
       return (this.referenceImages.length ? 3 : 2) * this.count;
     },
     displayedHistoryRecords() {
-      return this.historyOnlyCopy ? this.historyRecords.filter(record => record.action === 'copy_generation') : this.historyRecords;
+      const records = this.historyRecords.filter(record => record.action !== 'prompt_enhance');
+      return this.historyOnlyCopy ? records.filter(record => record.action === 'copy_generation') : records;
     },
   },
   async mounted() {
@@ -617,6 +618,7 @@ export default {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'AI 润色失败');
         this.prompt = data.prompt;
+        if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
       } catch (error) {
         this.errorMessage = error.message;
       } finally {
