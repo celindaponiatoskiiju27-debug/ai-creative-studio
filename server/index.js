@@ -69,6 +69,7 @@ function client() {
 let supabaseInstance
 const registrationAttempts = new Map()
 const promptEnhanceAttempts = new Map()
+const productEventAttempts = new Map()
 
 function allowPromptEnhance(userId) {
   const now = Date.now()
@@ -488,6 +489,23 @@ app.get('/api/admin/usage', requireUser, requireAdmin, async (req, res, next) =>
     const { data, error } = await query
     if (error) throw error
     res.json({ records: data })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/events', async (req, res, next) => {
+  try {
+    const allowed = ['page_view', 'onboarding_view', 'onboarding_start', 'template_select', 'login_prompt', 'generation_success', 'recharge_open', 'recharge_order']
+    const eventType = String(req.body.eventType || '')
+    const anonymousId = String(req.body.anonymousId || '').slice(0, 100)
+    if (!allowed.includes(eventType) || !anonymousId) return res.status(400).json({ error: '无效事件' })
+    const ip = req.ip || req.socket.remoteAddress || 'unknown'; const now = Date.now(); const recent = (productEventAttempts.get(ip) || []).filter(time => now - time < 3600000)
+    if (recent.length >= 100) return res.status(429).json({ error: '事件上报过于频繁' }); recent.push(now); productEventAttempts.set(ip, recent)
+    let userId = null; const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
+    if (token) { const { data } = await supabaseAdmin().auth.getUser(token); userId = data.user?.id || null }
+    const metadata = req.body.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata) ? Object.fromEntries(Object.entries(req.body.metadata).slice(0, 20).map(([key, value]) => [String(key).slice(0, 60), String(value).slice(0, 300)])) : {}
+    const { error } = await supabaseAdmin().from('product_events').insert({ anonymous_id: anonymousId, user_id: userId, event_type: eventType, metadata, ip_address: ip })
+    if (error) throw error
+    res.status(204).end()
   } catch (error) { next(error) }
 })
 

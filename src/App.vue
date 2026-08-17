@@ -47,13 +47,16 @@
           <button v-if="session" class="ghost-btn" @click="openInvite">邀请好友</button>
           <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
           <button v-else class="ghost-btn" @click="requestLogin('登录后可使用完整功能')">登录 / 注册</button>
+          <button class="ghost-btn" @click="onboardingOpen = true">新手引导</button>
           <button class="ghost-btn" @click="openSupport">帮助中心</button
           ><button class="primary-small" @click="openRecharge">获取算力</button>
         </div>
       </header>
+      <div v-if="session && credits <= 2" class="low-credit-banner"><span>当前仅剩 <b>{{ credits }}</b> 点算力，可能不足以完成下一次创作。</span><button @click="openRecharge">查看算力套餐</button></div>
       <section v-if="page === 'copy'" class="copywriter-view">
         <div class="copy-form-card">
           <div class="copy-intro"><span>AI</span><div><b>电商文案生成器</b><small>填写商品信息，快速生成可直接使用的营销文案</small></div></div>
+          <div class="starter-templates"><span>快速开始</span><button v-for="item in copyTemplates" :key="item.name" @click="applyCopyTemplate(item)">{{ item.name }}</button></div>
           <div class="field"><label>商品名称</label><input v-model="copyProduct" class="copy-input" maxlength="100" placeholder="例如：夏季冰丝防晒衣" /></div>
           <div class="field"><label>核心卖点</label><textarea v-model="copyFeatures" class="copy-textarea" maxlength="1000" placeholder="例如：UPF50+、冰凉透气、轻薄不闷汗、男女同款"></textarea></div>
           <div class="copy-grid">
@@ -116,6 +119,7 @@
                 >
               </div>
             </div>
+            <div class="starter-templates prompt-templates"><span>电商模板</span><button v-for="item in imageTemplates" :key="item.name" @click="applyImageTemplate(item)">{{ item.name }}</button></div>
           </div>
           <div v-if="page === 'video' && videoMode === 'image'" class="field upload-field">
             <label>待生成动图的图片</label
@@ -374,6 +378,14 @@
     </div>
     <AuthModal v-if="authReady && (passwordRecovery || (!session && authOpen))" :recovery-mode="passwordRecovery" @close="closeAuthModal" @recovered="finishPasswordRecovery" @legal="openLegal" />
     <LegalModal v-if="legalOpen" :initial-tab="legalTab" @close="legalOpen = false" />
+    <div v-if="onboardingOpen" class="onboarding-overlay" @click.self="closeOnboarding">
+      <section class="onboarding-modal">
+        <header><div><span>✦</span><h2>3步完成第一件电商作品</h2><p>无需先学习复杂提示词，选择模板就能开始</p></div><button @click="closeOnboarding">×</button></header>
+        <div class="onboarding-steps"><article><b>1</b><div><h3>选择创作类型</h3><p>文案适合商品标题与详情页；图片适合主图和宣传素材；GIF与视频让商品展示更生动。</p></div></article><article><b>2</b><div><h3>套用模板并修改</h3><p>选择下面的行业模板，再替换商品名称、卖点和画面要求，不需要从空白开始。</p></div></article><article><b>3</b><div><h3>登录并生成</h3><p>浏览和填写内容无需登录，点击生成时再登录。生成结果会自动保存在“我的作品”。</p></div></article></div>
+        <div class="onboarding-choices"><button @click="startOnboarding('copy')"><span>文</span><b>先生成电商文案</b><small>消耗低，最快体验</small></button><button @click="startOnboarding('image')"><span>图</span><b>先生成商品图片</b><small>适合主图和海报</small></button><button @click="startOnboarding('video')"><span>动</span><b>让商品图片动起来</b><small>上传图片生成 GIF</small></button></div>
+        <label><input v-model="hideOnboarding" type="checkbox" /> 下次不再自动显示</label>
+      </section>
+    </div>
     <div
       class="overlay"
       :class="{ show: menuOpen }"
@@ -434,6 +446,20 @@ export default {
         "身穿白色机能风外套的少女站在云端，日系动画，清透色彩，细腻线条",
       ],
       ideaNames: ["梦幻城市", "产品摄影", "动漫角色"],
+      copyTemplates: [
+        { name: '服装种草', product: '夏季冰丝防晒衣', features: 'UPF50+防晒、冰凉透气、轻薄不闷汗、多色可选', platform: '小红书', style: '种草分享' },
+        { name: '美妆促销', product: '持妆水润气垫', features: '轻薄遮瑕、持妆12小时、水润不卡粉、便携补妆', platform: '抖音 / 快手', style: '促销转化' },
+        { name: '家居卖点', product: '人体工学护腰座椅', features: '多点支撑、可调腰托、透气网布、静音滚轮', platform: '淘宝 / 天猫', style: '专业可信' },
+      ],
+      imageTemplates: [
+        { name: '白底主图', prompt: '单件商品居中展示，纯白无缝背景，柔和棚拍光线，清晰边缘，高级电商产品摄影，不出现文字与标志', ratio: '1:1' },
+        { name: '促销场景', prompt: '商品放置在精致展台中央，品牌感电商促销场景，明亮氛围光，画面预留营销文字区域，不出现乱码', ratio: '1:1' },
+        { name: '小红书封面', prompt: '生活方式产品分享画面，自然日光，干净温暖的家居背景，真实摄影质感，构图适合小红书封面', ratio: '3:4' },
+        { name: '横版广告', prompt: '高端商业产品广告，商品位于画面右侧，左侧大面积留白，层次丰富的光影，高清摄影', ratio: '16:9' },
+      ],
+      onboardingOpen: !localStorage.getItem('lingjing-onboarding-hidden'),
+      hideOnboarding: false,
+      anonymousId: localStorage.getItem('lingjing-anonymous-id') || (crypto.randomUUID ? crypto.randomUUID() : `anon-${Date.now()}-${Math.random().toString(36).slice(2)}`),
       page: "image",
       mode: "text",
       prompt: "",
@@ -599,6 +625,7 @@ export default {
     },
   },
   async mounted() {
+    localStorage.setItem('lingjing-anonymous-id', this.anonymousId); this.trackEvent('page_view', { page: this.page }); if (this.onboardingOpen) this.trackEvent('onboarding_view')
     this.loadDesignDraft()
     if (!supabaseConfigured) { this.authReady = true; return }
     const { data } = await supabase.auth.getSession()
@@ -619,7 +646,13 @@ export default {
     this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
+    trackEvent(eventType, metadata = {}) { fetch('/api/events', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ eventType, anonymousId: this.anonymousId, metadata }) }).catch(() => {}) },
+    closeOnboarding() { if (this.hideOnboarding) localStorage.setItem('lingjing-onboarding-hidden', '1'); this.onboardingOpen = false },
+    startOnboarding(page) { this.trackEvent('onboarding_start', { page }); this.page = page; if (page === 'copy') this.applyCopyTemplate(this.copyTemplates[0]); else if (page === 'image') this.applyImageTemplate(this.imageTemplates[0]); else { this.videoMode = 'image'; this.prompt = '让商品保持外观一致，镜头缓慢推进，光影轻微流动，动作自然稳定'; } this.closeOnboarding(); this.menuOpen = false },
+    applyCopyTemplate(item) { this.trackEvent('template_select', { type: 'copy', name: item.name }); this.copyProduct = item.product; this.copyFeatures = item.features; this.copyPlatform = item.platform; this.copyStyle = item.style },
+    applyImageTemplate(item) { this.trackEvent('template_select', { type: 'image', name: item.name }); this.prompt = item.prompt; this.ratio = item.ratio; this.page = 'image' },
     requestLogin(message = '请先登录后继续') {
+      this.trackEvent('login_prompt', { page: this.page })
       this.errorMessage = message
       this.authOpen = true
       return false
@@ -668,6 +701,7 @@ export default {
     },
     async openRecharge() {
       if (!this.session) { this.requestLogin('请先登录后再充值'); return; }
+      this.trackEvent('recharge_open', { credits: this.credits })
       this.rechargeOpen = true; this.rechargeMessage = ''; this.rechargeError = false;
       try {
         const [configResponse, ordersResponse, transactionsResponse] = await Promise.all([
@@ -694,6 +728,7 @@ export default {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '充值订单提交失败');
         this.rechargeOrders.unshift(data.order); this.paymentReference = ''; this.paymentProof = null; this.refundAgreement = false; if (this.$refs.paymentProofInput) this.$refs.paymentProofInput.value = '';
+        this.trackEvent('recharge_order', { package: data.order.package_id, amountFen: data.order.amount_fen })
         this.rechargeMessage = `订单 ${data.order.order_no} 已提交，请完成付款并等待管理员审核。`;
       } catch (error) { this.rechargeMessage = error.message; this.rechargeError = true; }
       finally { this.rechargeLoading = false; }
@@ -760,7 +795,7 @@ export default {
     async generateCopy() {
       if (this.copyLoading) return;
       if (!this.session) { this.copyError = "请先登录后再生成"; this.requestLogin(this.copyError); return; }
-      if (this.credits < 1) { this.copyError = "算力不足，请充值后再试"; return; }
+      if (this.credits < 1) { this.copyError = "算力不足，请充值后再试"; await this.openRecharge(); return; }
       if (!this.copyProduct.trim()) { this.copyError = "请填写商品名称"; return; }
       if (!this.copyFeatures.trim()) { this.copyError = "请填写商品核心卖点"; return; }
       this.copyLoading = true; this.copyError = ""; this.copyCopied = false;
@@ -772,6 +807,7 @@ export default {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '文案生成失败');
         this.copyResult = data.copy;
+        this.trackEvent('generation_success', { type: 'copy' })
         if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
       } catch (error) { this.copyError = error.message; }
       finally { this.copyLoading = false; }
@@ -893,7 +929,7 @@ export default {
       if (this.designBgLoading) return;
       if (!this.session) { this.requestLogin('请先登录后生成 AI 商品背景'); return; }
       if (!this.designBackgroundPrompt.trim()) { this.designMessage = '请先描述想要的商品背景'; this.designError = true; return; }
-      if (this.credits < 2) { this.designMessage = '算力不足，生成背景需要 2 点算力'; this.designError = true; return; }
+      if (this.credits < 2) { this.designMessage = '算力不足，生成背景需要 2 点算力'; this.designError = true; await this.openRecharge(); return; }
       this.designBgLoading = true; this.designMessage = ''; this.designError = false;
       try {
         const ratio = this.designWidth > this.designHeight ? '16:9' : (this.designWidth < this.designHeight ? '3:4' : '1:1');
@@ -1015,9 +1051,9 @@ export default {
     async generate() {
       if (this.loading) return;
       if (!this.session) { this.requestLogin("请先登录后再生成"); return; }
+      if (this.credits < this.requiredCredits) { this.errorMessage = `算力不足，本次需要 ${this.requiredCredits} 点`; await this.openRecharge(); return; }
       if (!this.prompt.trim()) { this.errorMessage = "请输入画面描述"; return; }
       if (this.page === "video" && this.videoMode === 'image' && !this.uploadFile) { this.errorMessage = "请先上传一张静态图片"; return; }
-      if (this.credits < this.requiredCredits) { this.errorMessage = "算力不足，请充值后再试"; return; }
       this.errorMessage = "";
       this.loading = true;
       this.state = "loading";
@@ -1045,6 +1081,7 @@ export default {
         this.results = this.page === 'video'
           ? (this.videoMode === 'image' ? (data.gifs || []) : (data.videos || []))
           : data.images;
+        this.trackEvent('generation_success', { type: this.page === 'video' ? (this.videoMode === 'image' ? 'gif' : 'video') : (this.referenceImages.length ? 'image_edit' : 'image') })
         this.resultType = this.page === 'video'
           ? (this.videoMode === 'image' ? 'gif' : 'video')
           : 'image';
@@ -1093,6 +1130,7 @@ export default {
 .copy-output { flex: 1; margin: 15px 0 0; padding: 22px; border: 1px solid #eeebfa; border-radius: 14px; overflow: auto; background: #faf9ff; color: #292735; white-space: pre-wrap; word-break: break-word; font: 13px/1.9 "PingFang SC","Microsoft YaHei",sans-serif; }
 .copy-output-wrap{position:relative;flex:1;min-height:0}.copy-output-wrap .copy-output{height:calc(100% - 15px);padding-top:46px}.ai-content-label{display:inline-flex;align-items:center;padding:4px 9px;border-radius:999px;background:#f0ecff;color:#6847e8;font-size:10px;font-weight:700;line-height:1.2}.copy-output-wrap>.ai-content-label{position:absolute;z-index:2;left:14px;top:29px}.media-label{position:absolute;z-index:3;left:8px;top:8px;background:#171820c9;color:#fff;backdrop-filter:blur(5px)}
 .usage-warning,.result-usage-tip,.asset-usage-tip{color:#8a6415;background:#fff9e8;border:1px solid #f2dfab;border-radius:9px;font-size:10px;line-height:1.65}.usage-warning{margin:10px 0 0;padding:9px 11px}.result-usage-tip{margin:0 0 12px;padding:8px 11px}.asset-usage-tip{margin:0 0 14px;padding:9px 12px}
+.low-credit-banner{margin:10px 22px 0;padding:9px 13px;border:1px solid #f0d18b;border-radius:10px;background:#fff9e8;color:#775718;display:flex;align-items:center;justify-content:space-between;font-size:11px}.low-credit-banner button{height:30px;padding:0 10px;border:0;border-radius:7px;background:#7657ff;color:#fff;cursor:pointer}.starter-templates{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin:12px 0}.starter-templates>span{color:#858993;font-size:10px}.starter-templates button{height:28px;padding:0 9px;border:1px solid #ded8ff;border-radius:8px;background:#f8f6ff;color:#6847e8;font-size:10px;cursor:pointer}.prompt-templates{margin:8px 0 0}.onboarding-overlay{position:fixed;inset:0;z-index:150;background:#11131aa8;display:grid;place-items:center;padding:18px}.onboarding-modal{width:min(760px,100%);max-height:92vh;overflow:auto;padding:26px;border-radius:22px;background:#fff;box-shadow:0 30px 100px #1118}.onboarding-modal>header{display:flex;justify-content:space-between}.onboarding-modal>header>div>span{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#6847ff,#9e75ff);color:#fff;display:grid;place-items:center}.onboarding-modal h2{margin:13px 0 5px}.onboarding-modal header p{margin:0;color:#858993;font-size:11px}.onboarding-modal header button{align-self:flex-start;border:0;background:none;font-size:27px;cursor:pointer}.onboarding-steps{margin:20px 0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.onboarding-steps article{padding:14px;border:1px solid #ececf1;border-radius:12px;display:flex;gap:10px}.onboarding-steps article>b{flex:0 0 27px;height:27px;border-radius:50%;background:#ede8ff;color:#6847e8;display:grid;place-items:center}.onboarding-steps h3{margin:3px 0 6px;font-size:12px}.onboarding-steps p{margin:0;color:#797d87;font-size:9px;line-height:1.65}.onboarding-choices{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.onboarding-choices button{padding:16px;border:1px solid #e4e2ec;border-radius:13px;background:#fff;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer}.onboarding-choices button:hover{border-color:#8368ff;background:#faf9ff}.onboarding-choices span{width:36px;height:36px;border-radius:10px;background:#ede8ff;color:#6847e8;display:grid;place-items:center;font-weight:800}.onboarding-choices small{color:#90939b}.onboarding-modal>label{display:block;margin-top:15px;color:#858993;font-size:10px}@media(max-width:650px){.onboarding-steps,.onboarding-choices{grid-template-columns:1fr}.low-credit-banner{margin:8px 10px 0}.onboarding-modal{padding:18px}}
 .recharge-overlay{position:fixed;inset:0;z-index:100;background:#11131a99;display:grid;place-items:center;padding:20px}.recharge-modal{width:min(820px,100%);max-height:92vh;overflow:auto;padding:25px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.recharge-modal>header{display:flex;justify-content:space-between;align-items:flex-start}.recharge-modal h2{margin:0 0 6px}.recharge-modal header p{margin:0;color:#858993;font-size:12px}.recharge-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.package-grid{margin:22px 0;display:grid;grid-template-columns:repeat(5,1fr);gap:9px}.package-grid button{position:relative;min-height:142px;padding:17px 8px 12px;border:1px solid #e9eaf0;border-radius:13px;background:#fff;display:flex;flex-direction:column;align-items:center;gap:7px;cursor:pointer}.package-grid button.selected{border:2px solid #7657ff;background:#f8f6ff}.package-grid button>em{position:absolute;top:-9px;padding:3px 9px;border-radius:10px;background:#7657ff;color:#fff;font-size:9px;font-style:normal}.package-grid strong{font-size:22px}.package-grid span{color:#7657ff;font-size:12px}.package-grid small{color:#999;font-size:9px}.payment-box{padding:20px;border-radius:13px;background:#f7f7fa;display:flex;gap:24px;align-items:center}.payment-qr-link{flex:0 0 240px;display:flex;flex-direction:column;align-items:center;gap:7px;color:#7657ff;text-decoration:none;font-size:11px}.payment-qr-link img{width:240px;height:240px;padding:6px;object-fit:contain;background:#fff;border-radius:10px;box-shadow:0 4px 16px #2221}.payment-qr-link small{font-size:10px}.payment-box>div{flex:1}.payment-box p{margin:7px 0;color:#777b85;font-size:11px}.payment-box input{width:100%;height:38px;padding:0 11px;border:1px solid #dddfe6;border-radius:9px;background:#fff}.recharge-success{color:#17894c;font-size:12px}.order-list{margin-top:20px}.order-list h3{font-size:13px}.order-list>div{padding:9px 0;border-top:1px solid #eee;display:grid;grid-template-columns:1fr auto 60px;gap:10px;font-size:10px}.order-list em{text-align:right;font-style:normal}.order-list em.paid{color:#17894c}.order-list em.pending{color:#d38316}.order-list em.rejected{color:#d33}@media(max-width:700px){.package-grid{grid-template-columns:repeat(2,1fr)}.payment-box{align-items:stretch;flex-direction:column}.payment-qr-link{flex-basis:auto;align-self:center}.payment-qr-link img{width:min(280px,75vw);height:min(280px,75vw)}.order-list>div{grid-template-columns:1fr}.order-list em{text-align:left}}
 .history-modal{width:min(820px,100%);max-height:90vh;overflow:auto;padding:24px;border-radius:20px;background:#fff;box-shadow:0 30px 90px #1117}.history-modal>header{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:16px;border-bottom:1px solid #eee}.history-modal h2{margin:0 0 6px}.history-modal header p{margin:0;color:#858993;font-size:12px}.history-modal header button{border:0;background:transparent;font-size:26px;cursor:pointer}.history-list article{padding:15px 0;border-bottom:1px solid #f0f1f4;display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center}.history-icon{width:42px;height:42px;border-radius:11px;background:#f0ecff;color:#7657ff;display:grid;place-items:center;font-weight:700}.history-info{min-width:0}.history-info>div{display:flex;align-items:center;gap:8px}.history-info em{padding:2px 7px;border-radius:8px;background:#fff3dc;color:#b36b00;font-size:9px;font-style:normal}.history-info em.completed{background:#eaf8ef;color:#17894c}.history-info em.failed{background:#fff0f0;color:#c44}.history-info p{margin:6px 0;color:#555;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}.history-info small{color:#999;font-size:9px}.history-list article>strong{color:#7657ff;font-size:12px}.history-assets{grid-column:2/-1;display:grid;grid-template-columns:repeat(4,minmax(90px,1fr));gap:8px}.history-asset{position:relative;aspect-ratio:1;overflow:hidden;border-radius:10px;background:#17181d}.history-asset img,.history-asset video{width:100%;height:100%;object-fit:cover}.history-asset button{position:absolute;right:6px;bottom:6px;height:27px;padding:0 9px;border:0;border-radius:7px;background:#15161dcc;color:#fff;font-size:9px;cursor:pointer}.history-no-asset{grid-column:2/-1;margin:0;padding:10px;border-radius:8px;background:#f7f7f9;color:#999;font-size:10px}.history-loading,.history-empty{padding:70px 20px;text-align:center;color:#999;font-size:12px}@media(max-width:560px){.history-list article{grid-template-columns:36px 1fr}.history-icon{width:36px;height:36px}.history-list article>strong{grid-column:2}.history-assets{grid-column:1/-1;grid-template-columns:repeat(2,1fr)}.history-no-asset{grid-column:1/-1}}
 .history-copy-output{grid-column:2/-1;position:relative;padding:14px;border-radius:10px;background:#faf9ff;border:1px solid #eeebfa}.history-copy-output pre{max-height:240px;margin:0;padding-right:80px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.75 "PingFang SC","Microsoft YaHei",sans-serif}.history-copy-output button{position:absolute;right:10px;top:10px;height:28px;padding:0 10px;border:0;border-radius:7px;background:#7657ff;color:#fff;font-size:9px;cursor:pointer}@media(max-width:560px){.history-copy-output{grid-column:1/-1}.history-copy-output pre{padding-right:0;padding-top:35px}}
