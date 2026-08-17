@@ -1166,6 +1166,33 @@ app.get('/api/billing/config', async (_req, res, next) => {
   } catch (error) { next(error) }
 })
 
+app.get('/api/site-announcement', async (_req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('site_announcements').select('active,level,title,content,starts_at,ends_at,updated_at').eq('id', true).maybeSingle()
+    if (error) throw error
+    const now = Date.now(); const visible = Boolean(data?.active && data.title && (!data.starts_at || new Date(data.starts_at).getTime() <= now) && (!data.ends_at || new Date(data.ends_at).getTime() > now))
+    res.json({ announcement: visible ? data : null })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/site-announcement', requireUser, requireAdmin, async (_req, res, next) => {
+  try { const { data, error } = await supabaseAdmin().from('site_announcements').select('*').eq('id', true).single(); if (error) throw error; res.json({ announcement: data }) }
+  catch (error) { next(error) }
+})
+
+app.patch('/api/admin/site-announcement', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const level = ['info','warning','critical','success'].includes(req.body.level) ? req.body.level : 'info'
+    const title = String(req.body.title || '').trim().slice(0, 80); const content = String(req.body.content || '').trim().slice(0, 500)
+    if (req.body.active === true && (!title || !content)) return res.status(400).json({ error: '启用公告前请填写标题和内容' })
+    const values = { active: req.body.active === true, level, title, content, starts_at: req.body.starts_at || null, ends_at: req.body.ends_at || null, updated_by: req.user.id, updated_at: new Date().toISOString() }
+    if (values.starts_at && values.ends_at && new Date(values.ends_at) <= new Date(values.starts_at)) return res.status(400).json({ error: '公告结束时间必须晚于开始时间' })
+    const { data, error } = await supabaseAdmin().from('site_announcements').update(values).eq('id', true).select('*').single(); if (error) throw error
+    await auditAdmin(req, 'update_announcement', 'site_announcement', 'global', { active: values.active, level, title })
+    res.json({ announcement: data })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/billing/orders', requireUser, async (req, res, next) => {
   try {
     await supabaseAdmin().from('recharge_orders').update({ status: 'cancelled' }).eq('user_id', req.user.id).eq('status', 'pending').lt('expires_at', new Date().toISOString())

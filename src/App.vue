@@ -52,6 +52,7 @@
           ><button class="primary-small" @click="openRecharge">获取算力</button>
         </div>
       </header>
+      <div v-if="$data.siteAnnouncement" class="site-announcement" :class="$data.siteAnnouncement.level"><div><b>{{ $data.siteAnnouncement.title }}</b><span>{{ $data.siteAnnouncement.content }}</span></div><button aria-label="关闭公告" @click="dismissAnnouncement">×</button></div>
       <div v-if="session && credits <= 2" class="low-credit-banner"><span>当前仅剩 <b>{{ credits }}</b> 点算力，可能不足以完成下一次创作。</span><button @click="openRecharge">查看算力套餐</button></div>
       <section v-if="page === 'home'" class="landing-view">
         <div class="landing-hero">
@@ -652,7 +653,7 @@ export default {
     },
   },
   async mounted() {
-    localStorage.setItem('lingjing-anonymous-id', this.anonymousId); this.trackEvent('page_view', { page: this.page }); if (this.onboardingOpen) this.trackEvent('onboarding_view')
+    localStorage.setItem('lingjing-anonymous-id', this.anonymousId); this.trackEvent('page_view', { page: this.page }); if (this.onboardingOpen) this.trackEvent('onboarding_view'); this.loadSiteAnnouncement()
     this.loadDesignDraft()
     if (!supabaseConfigured) { this.authReady = true; return }
     const { data } = await supabase.auth.getSession()
@@ -673,6 +674,8 @@ export default {
     this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
+    async loadSiteAnnouncement() { try { const response = await fetch('/api/site-announcement'); const data = await response.json(); const item = data.announcement; if (item && localStorage.getItem('lingjing-dismissed-announcement') !== item.updated_at) this.$set(this.$data, 'siteAnnouncement', item) } catch (_error) {} },
+    dismissAnnouncement() { if (this.$data.siteAnnouncement?.updated_at) localStorage.setItem('lingjing-dismissed-announcement', this.$data.siteAnnouncement.updated_at); this.$delete(this.$data, 'siteAnnouncement') },
     trackEvent(eventType, metadata = {}) { fetch('/api/events', { method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ eventType, anonymousId: this.anonymousId, metadata }) }).catch(() => {}) },
     closeOnboarding() { if (this.hideOnboarding) localStorage.setItem('lingjing-onboarding-hidden', '1'); this.onboardingOpen = false },
     startOnboarding(page) { this.trackEvent('onboarding_start', { page }); this.page = page; if (page === 'copy') this.applyCopyTemplate(this.copyTemplates[0]); else if (page === 'image') this.applyImageTemplate(this.imageTemplates[0]); else { this.videoMode = 'image'; this.prompt = '让商品保持外观一致，镜头缓慢推进，光影轻微流动，动作自然稳定'; } this.closeOnboarding(); this.menuOpen = false },
