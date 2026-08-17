@@ -44,7 +44,7 @@
         </div>
         <div class="top-actions">
           <button v-if="session" class="credit-pill"><span>✦</span> {{ credits }} 点</button>
-          <button v-if="session" class="ghost-btn" @click="openInvite">邀请好友</button>
+          <button v-if="session" class="ghost-btn" @click="openInvite">邀请新用户</button>
           <button v-if="session" class="ghost-btn" @click="logout">退出登录</button>
           <button v-else class="ghost-btn" @click="requestLogin('登录后可使用完整功能')">登录 / 注册</button>
           <button class="ghost-btn" @click="onboardingOpen = true">新手引导</button>
@@ -333,10 +333,10 @@
     </main>
     <div v-if="inviteOpen" class="recharge-overlay" @click.self="inviteOpen = false">
       <section class="invite-modal">
-        <header><div><h2>邀请好友，双方得算力</h2><p>好友通过你的链接注册并完成首次生成后发放奖励</p></div><button @click="inviteOpen = false">×</button></header>
+        <header><div><h2>邀请新用户，双方得算力</h2><p>新用户通过你的链接注册并完成首次真实充值后发放奖励</p></div><button @click="inviteOpen = false">×</button></header>
         <div class="invite-code-box"><span>我的邀请码</span><strong>{{ inviteData.code || '读取中…' }}</strong><button @click="copyInviteLink">{{ inviteCopied ? '已复制邀请链接' : '复制邀请链接' }}</button></div>
-        <div v-if="inviteData.settings" class="invite-rules"><div><b>＋{{ inviteData.settings.inviter_reward }}</b><span>邀请人奖励</span></div><div><b>＋{{ inviteData.settings.invitee_reward }}</b><span>好友奖励</span></div><div><b>{{ inviteData.settings.per_inviter_monthly_limit }} 人</b><span>每月奖励上限</span></div></div>
-        <p class="invite-note">为控制刷号与预算，只有好友完成首次成功生成才会发放；达到平台月度预算后将停止发放。</p>
+        <div v-if="inviteData.settings" class="invite-rules"><div><b>＋{{ inviteData.settings.inviter_reward }}</b><span>邀请人奖励</span></div><div><b>＋{{ inviteData.settings.invitee_reward }}</b><span>新用户奖励</span></div><div><b>{{ inviteData.settings.per_inviter_monthly_limit }} 人</b><span>每月奖励上限</span></div></div>
+        <p class="invite-note">仅限此前未注册的新用户。首笔真实充值审核到账后发放；相同注册 IP、相同付款凭证、超过每日/月度人数或全站预算的邀请不发奖励。</p>
         <div class="invite-list"><h3>邀请记录</h3><div v-for="item in inviteData.referrals || []" :key="item.id"><span>{{ formatHistoryDate(item.created_at) }}</span><b>{{ referralStatus(item.status) }}</b><em v-if="item.status === 'rewarded'">＋{{ item.inviter_reward }} 点</em></div><p v-if="!(inviteData.referrals || []).length">还没有邀请记录，复制链接发给朋友吧。</p></div>
       </section>
     </div>
@@ -714,7 +714,7 @@ export default {
     async copyInviteLink() {
       const link = `${window.location.origin}/?ref=${encodeURIComponent(this.inviteData.code || '')}`; await navigator.clipboard.writeText(link); this.inviteCopied = true; setTimeout(() => { this.inviteCopied = false; }, 1500);
     },
-    referralStatus(status) { return ({ pending: '待好友首次生成', rewarded: '奖励已发放', budget_limited: '已达预算上限', disabled: '活动已关闭' })[status] || status; },
+    referralStatus(status) { return ({ pending: '待新用户首次充值', rewarded: '奖励已发放', budget_limited: '已达预算上限', disabled: '活动已关闭', rejected: '未通过风控' })[status] || status; },
     async loadAssetPage(page) {
       if (!this.session) { this.requestLogin('请先登录后查看个人资产'); return; }
       this.assetLoading = true; this.assetError = '';

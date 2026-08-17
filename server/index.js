@@ -404,10 +404,6 @@ async function finishGeneration(usageId, success) {
     const { error: ledgerError } = await supabaseAdmin().from('credit_transactions').insert({ user_id: usageBefore.user_id, type: 'refund', amount: usageBefore.credits, balance_after: profile.credits, reference_type: 'usage_record', reference_id: usageId, description: '生成失败自动返还' })
     if (ledgerError && ledgerError.code !== '42P01') console.error('[credit-ledger-refund]', ledgerError.message)
   }
-  if (success) {
-    const { error: referralError } = await supabaseAdmin().rpc('complete_referral_reward', { p_usage_id: usageId })
-    if (referralError && !/complete_referral_reward/i.test(referralError.message)) console.error('[referral-reward]', referralError.message)
-  }
 }
 
 async function rollbackGeneration(usageId, error) {
@@ -480,6 +476,8 @@ app.post('/api/auth/register', async (req, res, next) => {
       if (/already|registered|exists/i.test(error.message)) return res.status(409).json({ error: '该邮箱已经注册，请直接登录' })
       throw error
     }
+    const { error: ipError } = await supabaseAdmin().from('profiles').update({ registration_ip: req.ip }).eq('id', data.user.id)
+    if (ipError && ipError.code !== '42703') console.error('[registration-ip]', ipError.message)
     if (inviteCode) {
       const { data: inviter } = await supabaseAdmin().from('profiles').select('id,referral_code').eq('referral_code', inviteCode).maybeSingle()
       if (inviter && inviter.id !== data.user.id) {
@@ -845,7 +843,7 @@ app.get('/api/referrals/me', requireUser, async (req, res, next) => {
   try {
     const [{ data: profile, error: profileError }, { data: settings, error: settingsError }, { data: referrals, error: referralsError }] = await Promise.all([
       supabaseAdmin().from('profiles').select('referral_code').eq('id', req.user.id).single(),
-      supabaseAdmin().from('referral_settings').select('active,inviter_reward,invitee_reward,per_inviter_monthly_limit').eq('id', true).single(),
+      supabaseAdmin().from('referral_settings').select('active,inviter_reward,invitee_reward,per_inviter_daily_limit,per_inviter_monthly_limit').eq('id', true).single(),
       supabaseAdmin().from('referrals').select('id,status,inviter_reward,invitee_reward,rewarded_at,created_at').eq('inviter_id', req.user.id).order('created_at', { ascending: false }).limit(100)
     ])
     if (profileError) throw profileError; if (settingsError) throw settingsError; if (referralsError) throw referralsError
@@ -858,7 +856,7 @@ app.get('/api/admin/referrals', requireUser, requireAdmin, async (_req, res, nex
     const monthStart = new Date(); monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0)
     const [{ data: settings, error: settingsError }, { data: referrals, error: referralsError }] = await Promise.all([
       supabaseAdmin().from('referral_settings').select('*').eq('id', true).single(),
-      supabaseAdmin().from('referrals').select('id,inviter_id,invitee_id,invite_code,status,inviter_reward,invitee_reward,rewarded_at,created_at').order('created_at', { ascending: false }).limit(200)
+      supabaseAdmin().from('referrals').select('id,inviter_id,invitee_id,invite_code,status,inviter_reward,invitee_reward,rewarded_at,created_at,qualification_order_id,review_reason').order('created_at', { ascending: false }).limit(200)
     ])
     if (settingsError) throw settingsError; if (referralsError) throw referralsError
     const ids = [...new Set((referrals || []).flatMap(item => [item.inviter_id, item.invitee_id]))]
@@ -872,8 +870,8 @@ app.get('/api/admin/referrals', requireUser, requireAdmin, async (_req, res, nex
 
 app.patch('/api/admin/referral-settings', requireUser, requireAdmin, async (req, res, next) => {
   try {
-    const values = { active: req.body.active === true, inviter_reward: Number(req.body.inviter_reward), invitee_reward: Number(req.body.invitee_reward), monthly_budget: Number(req.body.monthly_budget), per_inviter_monthly_limit: Number(req.body.per_inviter_monthly_limit), updated_at: new Date().toISOString() }
-    if (![values.inviter_reward, values.invitee_reward, values.monthly_budget, values.per_inviter_monthly_limit].every(value => Number.isInteger(value) && value >= 0 && value <= 1000000)) return res.status(400).json({ error: '邀请奖励和预算必须是非负整数' })
+    const values = { active: req.body.active === true, inviter_reward: Number(req.body.inviter_reward), invitee_reward: Number(req.body.invitee_reward), monthly_budget: Number(req.body.monthly_budget), per_inviter_daily_limit: Number(req.body.per_inviter_daily_limit), per_inviter_monthly_limit: Number(req.body.per_inviter_monthly_limit), updated_at: new Date().toISOString() }
+    if (![values.inviter_reward, values.invitee_reward, values.monthly_budget, values.per_inviter_daily_limit, values.per_inviter_monthly_limit].every(value => Number.isInteger(value) && value >= 0 && value <= 1000000)) return res.status(400).json({ error: '邀请奖励和预算必须是非负整数' })
     const { data, error } = await supabaseAdmin().from('referral_settings').update(values).eq('id', true).select('*').single()
     if (error) throw error
     res.json({ settings: data })
@@ -1105,6 +1103,10 @@ app.post('/api/admin/recharge-orders/:id/review', requireUser, requireAdmin, asy
     const approve = req.body.approve === true
     const { data, error } = await supabaseAdmin().rpc('admin_review_recharge', { p_admin_id: req.user.id, p_order_id: req.params.id, p_approve: approve })
     if (error) throw error
+    if (approve) {
+      const { error: referralError } = await supabaseAdmin().rpc('complete_referral_payment', { p_order_id: req.params.id })
+      if (referralError) console.error('[referral-payment]', req.params.id, referralError.message)
+    }
     res.json({ credits: data, status: approve ? 'paid' : 'rejected' })
   } catch (error) { next(error) }
 })
