@@ -510,6 +510,58 @@ app.get('/api/admin/cost-control', requireUser, requireAdmin, async (_req, res, 
   } catch (error) { next(error) }
 })
 
+app.get('/api/admin/system-health', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const now = Date.now()
+    const hourAgo = new Date(now - 3600000).toISOString()
+    const staleBefore = new Date(now - 20 * 60000).toISOString()
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date()).filter(item => item.type !== 'literal').map(item => [item.type, item.value]))
+    const dayStart = new Date(`${parts.year}-${parts.month}-${parts.day}T00:00:00+08:00`).toISOString()
+    const monthStart = new Date(`${parts.year}-${parts.month}-01T00:00:00+08:00`).toISOString()
+    const [{ data: settings, error: settingsError }, { data: recent, error: recentError }, { data: monthUsage, error: monthError }] = await Promise.all([
+      supabaseAdmin().from('cost_control_settings').select('active,daily_limit_fen,monthly_limit_fen').eq('id', true).single(),
+      supabaseAdmin().from('usage_records').select('id,user_id,action,status,created_at').gte('created_at', hourAgo).order('created_at', { ascending: false }).limit(500),
+      supabaseAdmin().from('usage_records').select('estimated_cost_fen,status,created_at').in('status', ['pending', 'completed']).gte('created_at', monthStart)
+    ])
+    if (settingsError) throw settingsError
+    if (recentError) throw recentError
+    if (monthError) throw monthError
+    const failedHour = (recent || []).filter(item => item.status === 'failed').length
+    const pending = (recent || []).filter(item => item.status === 'pending')
+    const stale = pending.filter(item => item.created_at < staleBefore)
+    const monthUsedFen = (monthUsage || []).reduce((sum, item) => sum + Number(item.estimated_cost_fen || 0), 0)
+    const dayUsedFen = (monthUsage || []).filter(item => item.created_at >= dayStart).reduce((sum, item) => sum + Number(item.estimated_cost_fen || 0), 0)
+    const percent = (used, limit) => limit > 0 ? Math.round(used / limit * 100) : 0
+    const dayPercent = percent(dayUsedFen, settings.daily_limit_fen)
+    const monthPercent = percent(monthUsedFen, settings.monthly_limit_fen)
+    const alerts = []
+    if (!settings.active) alerts.push({ level: 'warning', code: 'generation_paused', message: '全站 AI 生成当前处于关闭状态' })
+    if (dayPercent >= 80) alerts.push({ level: dayPercent >= 100 ? 'critical' : 'warning', code: 'daily_budget', message: `今日预算已使用 ${dayPercent}%` })
+    if (monthPercent >= 80) alerts.push({ level: monthPercent >= 100 ? 'critical' : 'warning', code: 'monthly_budget', message: `本月预算已使用 ${monthPercent}%` })
+    if (failedHour >= 3) alerts.push({ level: failedHour >= 8 ? 'critical' : 'warning', code: 'failures', message: `最近 1 小时有 ${failedHour} 个生成任务失败` })
+    if (pending.length >= 5) alerts.push({ level: 'warning', code: 'pending', message: `当前检测到 ${pending.length} 个生成中任务` })
+    if (stale.length) alerts.push({ level: 'critical', code: 'stale', message: `${stale.length} 个任务已超过 20 分钟，可能需要退款清理` })
+    const configured = {
+      supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+      image: Boolean(process.env.OPENAI_API_KEY), text: Boolean(process.env.OPENAI_TEXT_API_KEY),
+      video: videoProvider() === 'aliyun' ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) : Boolean(process.env.FAL_KEY)
+    }
+    for (const [provider, ok] of Object.entries(configured)) if (!ok) alerts.push({ level: 'critical', code: `provider_${provider}`, message: `${provider} 服务尚未完整配置` })
+    res.json({ status: alerts.some(item => item.level === 'critical') ? 'critical' : (alerts.length ? 'warning' : 'healthy'), checkedAt: new Date().toISOString(), uptimeSeconds: Math.round(process.uptime()), configured, metrics: { failedHour, pending: pending.length, stale: stale.length, dayUsedFen, monthUsedFen, dayPercent, monthPercent }, alerts })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/admin/system-health/cleanup-stale', requireUser, requireAdmin, async (_req, res, next) => {
+  try {
+    const staleBefore = new Date(Date.now() - 20 * 60000).toISOString()
+    const { data, error } = await supabaseAdmin().from('usage_records').select('id').eq('status', 'pending').lt('created_at', staleBefore).limit(100)
+    if (error) throw error
+    let cleaned = 0
+    for (const item of data || []) { await finishGeneration(item.id, false); cleaned += 1 }
+    res.json({ cleaned })
+  } catch (error) { next(error) }
+})
+
 app.patch('/api/admin/cost-control', requireUser, requireAdmin, async (req, res, next) => {
   try {
     const allowedActions = ['copy_generation', 'prompt_enhance', 'image_generation', 'image_edit', 'gif_generation', 'video_generation']

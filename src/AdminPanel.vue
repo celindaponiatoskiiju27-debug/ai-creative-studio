@@ -7,6 +7,12 @@
       <button @click="loadUsers">搜索</button><button v-if="notificationPermission !== 'granted'" class="notification-enable" @click="enableNotifications">开启订单桌面提醒</button>
     </div>
     <p v-if="errorMessage" class="api-error">{{ errorMessage }}</p>
+    <section class="system-health-card" :class="systemHealth.status">
+      <div class="health-main"><span class="health-dot"></span><div><h3>{{ healthStatusName }}</h3><p>最近检查：{{ formatDate(systemHealth.checkedAt) }} · 服务运行 {{ uptimeText }}</p></div><button @click="loadSystemHealth(false)">立即检查</button></div>
+      <div class="health-metrics"><div><span>近 1 小时失败</span><b>{{ systemHealth.metrics.failedHour || 0 }}</b></div><div><span>生成中任务</span><b>{{ systemHealth.metrics.pending || 0 }}</b></div><div><span>超时任务</span><b>{{ systemHealth.metrics.stale || 0 }}</b></div><div><span>今日预算</span><b>{{ systemHealth.metrics.dayPercent || 0 }}%</b></div><div><span>本月预算</span><b>{{ systemHealth.metrics.monthPercent || 0 }}%</b></div></div>
+      <div v-if="systemHealth.alerts.length" class="health-alert-list"><p v-for="item in systemHealth.alerts" :key="item.code" :class="item.level"><b>{{ item.level === 'critical' ? '严重' : '提醒' }}</b>{{ item.message }}</p></div>
+      <div class="health-actions"><span>Supabase {{ providerStatus('supabase') }} · 图片 {{ providerStatus('image') }} · 文案 {{ providerStatus('text') }} · 视频 {{ providerStatus('video') }}</span><button v-if="systemHealth.metrics.stale" :disabled="healthCleaning" @click="cleanupStaleTasks">{{ healthCleaning ? '清理中…' : '清理超时任务并退款' }}</button></div>
+    </section>
     <div class="admin-stats">
       <article><span>用户数量</span><b>{{ users.length }}</b></article>
       <article><span>累计生成图片</span><b>{{ totalImages }}</b></article>
@@ -128,18 +134,36 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
     totalImages() { return this.users.reduce((sum, user) => sum + user.images_generated, 0) },
     totalCredits() { return this.users.reduce((sum, user) => sum + user.credits_used, 0) },
     selectedSupport() { return this.supportConversations.find(item => item.id === this.selectedSupportId) },
     pendingOrderCount() { return this.orders.filter(item => item.status === 'pending').length },
-    costBudgetDanger() { return this.budgetPercent(this.costStats.dayUsedFen, this.costSettings.daily_limit_fen) >= 80 || this.budgetPercent(this.costStats.monthUsedFen, this.costSettings.monthly_limit_fen) >= 80 }
+    costBudgetDanger() { return this.budgetPercent(this.costStats.dayUsedFen, this.costSettings.daily_limit_fen) >= 80 || this.budgetPercent(this.costStats.monthUsedFen, this.costSettings.monthly_limit_fen) >= 80 },
+    healthStatusName() { return ({ healthy: '系统运行正常', warning: '系统需要关注', critical: '系统存在严重异常' })[this.systemHealth.status] || '正在检查系统' },
+    uptimeText() { const seconds = Number(this.systemHealth.uptimeSeconds || 0); const days = Math.floor(seconds / 86400); const hours = Math.floor(seconds % 86400 / 3600); return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${Math.floor(seconds % 3600 / 60)} 分钟` }
   },
-  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadCostControl(); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000) },
-  beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); document.title = this.originalTitle },
+  mounted() { this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadCostControl(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
+  beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
     headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session.access_token}` } },
+    providerStatus(name) { return this.systemHealth.configured?.[name] ? '✓' : '未配置' },
+    async loadSystemHealth(notify = false) {
+      try {
+        const response = await fetch('/api/admin/system-health', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '系统检查失败'); this.systemHealth = data
+        const fingerprint = (data.alerts || []).filter(item => item.level === 'critical').map(item => item.code).sort().join(',')
+        if (notify && fingerprint && fingerprint !== this.lastHealthAlert && this.notificationPermission === 'granted') new Notification('灵境 AI：系统异常提醒', { body: data.alerts.filter(item => item.level === 'critical').map(item => item.message).join('；'), tag: 'lingjing-system-health', requireInteraction: true })
+        this.lastHealthAlert = fingerprint
+      } catch (error) { this.systemHealth = { ...this.systemHealth, status: 'critical', checkedAt: new Date().toISOString(), alerts: [{ level: 'critical', code: 'health_check', message: error.message }] } }
+    },
+    async cleanupStaleTasks() {
+      if (!window.confirm(`确认将 ${this.systemHealth.metrics.stale} 个超过 20 分钟的任务标记为失败，并自动退回用户算力吗？`)) return
+      this.healthCleaning = true; this.errorMessage = ''
+      try { const response = await fetch('/api/admin/system-health/cleanup-stale', { method: 'POST', headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '清理超时任务失败'); await Promise.all([this.loadSystemHealth(false), this.loadUsers()]); window.alert(`已清理并退款 ${data.cleaned} 个超时任务`) }
+      catch (error) { this.errorMessage = error.message }
+      finally { this.healthCleaning = false }
+    },
     money(fen) { return (Number(fen || 0) / 100).toFixed(2) },
     budgetPercent(used, limit) { return Number(limit) > 0 ? Math.min(100, Math.round(Number(used || 0) / Number(limit) * 100)) : 0 },
     isCostActionDisabled(action) { return (this.costSettings.disabled_actions || []).includes(action) },
