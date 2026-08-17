@@ -745,6 +745,33 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
   }
 })
 
+app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
+  try {
+    const prompt = String(req.body.prompt || '').trim()
+    if (!prompt) return res.status(400).json({ error: '请先输入需要润色的画面描述' })
+    if (prompt.length > 1000) return res.status(400).json({ error: '画面描述不能超过 1000 字' })
+
+    const stream = await textClient().responses.create({
+      model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4',
+      reasoning: { effort: 'low' },
+      max_output_tokens: 1000,
+      stream: true,
+      instructions: '你是一名专业的 AI 视觉提示词编辑。请将用户输入改写成一段更清晰、具体、可直接用于图片或视频生成的中文提示词。保留原始主体、商品信息和用户意图，补充合理的构图、环境、光线、镜头、材质、动作与画面风格；不得虚构具体品牌参数，不要解释，不要列点，不要使用 Markdown，只输出改写后的完整提示词。',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }]
+    })
+    let enhancedPrompt = ''
+    let completedResponse
+    for await (const event of stream) {
+      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') enhancedPrompt += event.delta
+      if (event.type === 'response.completed') completedResponse = event.response
+      if (event.type === 'error') throw new Error(event.message || event.error?.message || 'AI 润色响应失败')
+    }
+    enhancedPrompt = enhancedPrompt.trim() || responseText(completedResponse)
+    if (!enhancedPrompt) throw new Error(completedResponse?.error?.message || 'AI 未返回润色内容')
+    res.json({ prompt: enhancedPrompt, model: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4' })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/images/generate', requireUser, async (req, res, next) => {
   let usageId
   try {

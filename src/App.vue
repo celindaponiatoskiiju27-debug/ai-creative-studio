@@ -96,7 +96,7 @@
           </div>
           <div class="field">
             <div class="field-label">
-              <label>画面描述</label><button @click="enhance">✦ AI 润色</button>
+              <label>画面描述</label><button type="button" :disabled="enhanceLoading" :aria-busy="enhanceLoading ? 'true' : 'false'" @click="enhance"><span v-if="enhanceLoading" class="button-spinner" aria-hidden="true"></span>{{ enhanceLoading ? '润色中…' : '✦ AI 润色' }}</button>
             </div>
             <div class="prompt-box">
               <textarea
@@ -363,6 +363,7 @@ export default {
       copyStyle: "突出卖点",
       copyResult: "",
       copyLoading: false,
+      enhanceLoading: false,
       copyError: "",
       copyCopied: false,
       ratio: "1:1",
@@ -600,8 +601,27 @@ export default {
     randomize() {
       this.prompt = this.ideas[Math.floor(Math.random() * this.ideas.length)];
     },
-    enhance() {
-      this.prompt = `${this.prompt.trim() || this.ideas[0]}，专业构图，柔和体积光，丰富层次，超高细节，8K 质感`;
+    async enhance() {
+      if (this.enhanceLoading) return;
+      if (!this.session) { this.errorMessage = "请先登录后再使用 AI 润色"; return; }
+      const prompt = this.prompt.trim();
+      if (!prompt) { this.errorMessage = "请先输入需要润色的画面描述"; return; }
+      this.enhanceLoading = true;
+      this.errorMessage = "";
+      try {
+        const response = await fetch('/api/prompt/enhance', {
+          method: 'POST',
+          headers: this.authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ prompt })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'AI 润色失败');
+        this.prompt = data.prompt;
+      } catch (error) {
+        this.errorMessage = error.message;
+      } finally {
+        this.enhanceLoading = false;
+      }
     },
     selectModel(m) {
       this.model = m;
