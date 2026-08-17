@@ -32,6 +32,7 @@
           ><span><b>{{ displayName }}</b><small>{{ accountLabel }} · {{ profileEmail }}</small></span
           ><i v-if="session" @click.stop="logout">退出</i><i v-else>登录</i>
         </button>
+        <div class="sidebar-legal"><button @click="openLegal('terms')">用户协议</button><button @click="openLegal('privacy')">隐私政策</button><button @click="openLegal('refund')">退款规则</button></div>
       </div>
     </aside>
     <main class="workspace">
@@ -322,7 +323,7 @@
           <a v-if="billing.paymentQrUrl" class="payment-qr-link" :href="billing.paymentQrUrl" target="_blank" title="点击查看大图"><img :src="billing.paymentQrUrl" alt="微信付款二维码" /><small>扫码支付 · 点击查看大图</small></a>
           <div><b>当前为内测人工充值</b><p>{{ billing.instructions || '提交订单后，请等待管理员核对到账。' }}</p><input v-model.trim="paymentReference" maxlength="200" placeholder="付款单号或付款备注（必填）" /><label class="payment-proof-input">上传付款截图（必填）<input ref="paymentProofInput" type="file" accept="image/png,image/jpeg,image/webp" @change="selectPaymentProof" /></label><small>{{ paymentProof ? paymentProof.name : '支持 PNG、JPG、WebP，最大 5MB' }}</small></div>
         </div>
-        <label class="refund-agreement"><input v-model="refundAgreement" type="checkbox" /> 我已确认套餐金额与算力数量，并阅读退款规则：未使用算力可申请退款，已消耗算力及赠送算力不折现。</label>
+        <label class="refund-agreement"><input v-model="refundAgreement" type="checkbox" /> 我已确认套餐金额与算力数量，并阅读<button type="button" @click="openLegal('refund')">《充值与退款规则》</button>：未使用算力可申请退款，已消耗算力及赠送算力不折现。</label>
         <p v-if="rechargeMessage" :class="rechargeError ? 'api-error' : 'recharge-success'">{{ rechargeMessage }}</p>
         <button class="generate-btn" :class="{ loading: rechargeLoading }" :disabled="rechargeLoading || !selectedPackage || !refundAgreement" @click="createRechargeOrder">
           <span v-if="rechargeLoading" class="button-spinner"></span><span v-else>✦</span><b>{{ rechargeLoading ? '正在提交…' : '提交充值订单' }}</b>
@@ -367,7 +368,8 @@
         <div class="support-composer"><textarea v-model="supportDraft" maxlength="2000" placeholder="请输入你的问题…" @keydown.ctrl.enter.prevent="sendSupportMessage"></textarea><button :disabled="supportSending || !supportDraft.trim()" @click="sendSupportMessage">{{ supportSending ? '发送中…' : '发送' }}</button></div>
       </section>
     </div>
-    <AuthModal v-if="authReady && (passwordRecovery || (!session && authOpen))" :recovery-mode="passwordRecovery" @close="closeAuthModal" @recovered="finishPasswordRecovery" />
+    <AuthModal v-if="authReady && (passwordRecovery || (!session && authOpen))" :recovery-mode="passwordRecovery" @close="closeAuthModal" @recovered="finishPasswordRecovery" @legal="openLegal" />
+    <LegalModal v-if="legalOpen" :initial-tab="legalTab" @close="legalOpen = false" />
     <div
       class="overlay"
       :class="{ show: menuOpen }"
@@ -377,11 +379,12 @@
 </template>
 <script>
 import AuthModal from './AuthModal.vue'
+import LegalModal from './LegalModal.vue'
 import { supabase, supabaseConfigured } from './supabase'
 
 export default {
   name: "App",
-  components: { AuthModal },
+  components: { AuthModal, LegalModal },
   data() {
     const models = [{ name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型" }];
     return {
@@ -460,6 +463,8 @@ export default {
       authReady: false,
       authOpen: false,
       passwordRecovery: window.location.hash.includes('type=recovery'),
+      legalOpen: false,
+      legalTab: 'terms',
       session: null,
       profile: null,
       authSubscription: null,
@@ -615,6 +620,7 @@ export default {
       this.authOpen = true
       return false
     },
+    openLegal(tab = 'terms') { this.legalTab = tab; this.legalOpen = true; },
     async closeAuthModal() { if (this.passwordRecovery && supabase) await supabase.auth.signOut(); this.passwordRecovery = false; this.authOpen = false; },
     finishPasswordRecovery() { this.passwordRecovery = false; this.authOpen = false; window.history.replaceState({}, document.title, window.location.pathname + window.location.search); },
     async loadProfile() {
@@ -679,7 +685,7 @@ export default {
       if (!this.refundAgreement) { this.rechargeMessage = '请先阅读并确认退款规则'; this.rechargeError = true; return; }
       this.rechargeLoading = true; this.rechargeMessage = ''; this.rechargeError = false;
       try {
-        const body = new FormData(); body.append('packageId', this.selectedPackage); body.append('paymentReference', this.paymentReference); body.append('proof', this.paymentProof);
+        const body = new FormData(); body.append('packageId', this.selectedPackage); body.append('paymentReference', this.paymentReference); body.append('proof', this.paymentProof); body.append('acceptedTerms', 'true');
         const response = await fetch('/api/billing/orders', { method: 'POST', headers: this.authHeaders(), body });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '充值订单提交失败');

@@ -9,5 +9,6 @@ import './admin.css'
 import './canvas.css'
 import './assets.css'
 import './referrals.css'
+import './legal.css'
 Vue.config.productionTip=false
 new Vue({render:h=>h(App)}).$mount('#app')

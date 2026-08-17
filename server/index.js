@@ -25,6 +25,7 @@ app.use(cors({ origin: ['http://localhost:5174', 'http://127.0.0.1:5174'] }))
 app.use(express.json({ limit: '1mb' }))
 
 const CREDIT_PRICES = Object.freeze({ copy: 1, enhance: 1, image: 2, imageEdit: 3, gif: 6, video: 25 })
+const LEGAL_VERSION = '2026-08-17'
 const CREDIT_PACKAGES = Object.freeze([
   { id: 'trial', name: '首充体验', priceFen: 190, credits: 10, firstPurchaseOnly: true },
   { id: 'starter', name: '入门套餐', priceFen: 990, credits: 60 },
@@ -403,6 +404,7 @@ app.post('/api/auth/register', async (req, res, next) => {
     const email = String(req.body.email || '').trim().toLowerCase()
     const password = String(req.body.password || '')
     const inviteCode = String(req.body.inviteCode || '').trim().toUpperCase()
+    if (req.body.acceptedLegal !== true) return res.status(400).json({ error: '请先阅读并同意用户协议和隐私政策' })
     if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: '请输入有效邮箱' })
     if (password.length < 6) return res.status(400).json({ error: '密码至少需要 6 位' })
     const { data, error } = await supabaseAdmin().auth.admin.createUser({ email, password, email_confirm: true })
@@ -417,6 +419,9 @@ app.post('/api/auth/register', async (req, res, next) => {
         if (referralError) console.error('[referral-register]', referralError.message)
       }
     }
+    const consentRows = ['terms', 'privacy', 'ai_rules'].map(documentType => ({ user_id: data.user.id, document_type: documentType, document_version: LEGAL_VERSION, ip_address: req.ip, user_agent: String(req.headers['user-agent'] || '').slice(0, 500) }))
+    const { error: consentError } = await supabaseAdmin().from('user_consents').insert(consentRows)
+    if (consentError) console.error('[legal-consent]', consentError.message)
     res.status(201).json({ user: { id: data.user.id, email: data.user.email } })
   } catch (error) { next(error) }
 })
@@ -798,6 +803,7 @@ app.get('/api/billing/orders', requireUser, async (req, res, next) => {
 
 app.post('/api/billing/orders', requireUser, upload.single('proof'), async (req, res, next) => {
   try {
+    if (req.body.acceptedTerms !== 'true') return res.status(400).json({ error: '请先阅读并确认充值与退款规则' })
     const packages = await loadCreditPackages(true)
     const selected = packages.find(item => item.id === req.body.packageId)
     if (!selected) return res.status(400).json({ error: '充值套餐不存在' })
@@ -818,7 +824,7 @@ app.post('/api/billing/orders', requireUser, upload.single('proof'), async (req,
     if (proofError) throw proofError
     const { data, error } = await supabaseAdmin().from('recharge_orders').insert({
       order_no: orderNo, user_id: req.user.id, package_id: selected.id, amount_fen: priceFen,
-      credits: selected.credits, payment_provider: 'manual', payment_reference: reference, payment_proof_path: proofPath
+      credits: selected.credits, payment_provider: 'manual', payment_reference: reference, payment_proof_path: proofPath, terms_version: LEGAL_VERSION, terms_accepted_at: new Date().toISOString()
     }).select('id,order_no,package_id,amount_fen,credits,status,created_at,expires_at').single()
     if (error) throw error
     res.status(201).json({ order: data })

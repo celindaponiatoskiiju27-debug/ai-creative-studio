@@ -9,7 +9,8 @@
       <input v-if="!recoveryMode" v-model.trim="email" type="email" autocomplete="email" placeholder="name@example.com" required />
       <template v-if="!forgotMode"><label>{{ recoveryMode ? '新密码' : '密码' }}</label><input v-model="password" type="password" :autocomplete="registerMode || recoveryMode ? 'new-password' : 'current-password'" minlength="6" placeholder="至少 6 位密码" required /></template>
       <template v-if="registerMode && !recoveryMode"><label>邀请码 <small>选填</small></label><input v-model.trim="inviteCode" maxlength="16" placeholder="有邀请码可填写" /></template>
-      <button class="auth-submit" :disabled="loading">{{ loading ? '请稍候…' : (recoveryMode ? '确认修改密码' : (forgotMode ? '发送重置邮件' : (registerMode ? '注册' : '登录'))) }}</button>
+      <label v-if="registerMode && !recoveryMode" class="legal-consent"><input v-model="acceptedLegal" type="checkbox" />我已阅读并同意<button type="button" @click="$emit('legal','terms')">《用户协议》</button>和<button type="button" @click="$emit('legal','privacy')">《隐私政策》</button></label>
+      <button class="auth-submit" :disabled="loading || (registerMode && !acceptedLegal)">{{ loading ? '请稍候…' : (recoveryMode ? '确认修改密码' : (forgotMode ? '发送重置邮件' : (registerMode ? '注册' : '登录'))) }}</button>
       <p v-if="message" class="auth-message" :class="{ error: isError }">{{ message }}</p>
       <button v-if="!recoveryMode && !forgotMode" type="button" class="auth-forgot" @click="forgotMode = true; message = ''">忘记密码？</button>
       <button v-if="forgotMode" type="button" class="auth-switch" @click="forgotMode = false; message = ''">返回登录</button>
@@ -26,7 +27,7 @@ import { supabase, supabaseConfigured } from './supabase'
 export default {
   name: 'AuthModal',
   props: { recoveryMode: { type: Boolean, default: false } },
-  data: () => ({ email: '', password: '', inviteCode: new URLSearchParams(window.location.search).get('ref') || localStorage.getItem('lingjing-invite-code') || '', registerMode: Boolean(new URLSearchParams(window.location.search).get('ref')), forgotMode: false, loading: false, message: '', isError: false }),
+  data: () => ({ email: '', password: '', inviteCode: new URLSearchParams(window.location.search).get('ref') || localStorage.getItem('lingjing-invite-code') || '', registerMode: Boolean(new URLSearchParams(window.location.search).get('ref')), forgotMode: false, acceptedLegal: false, loading: false, message: '', isError: false }),
   methods: {
     switchMode() { this.registerMode = !this.registerMode; this.message = '' },
     async submit() {
@@ -47,7 +48,7 @@ export default {
           const response = await fetch('/api/auth/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: this.email, password: this.password, inviteCode: this.inviteCode })
+            body: JSON.stringify({ email: this.email, password: this.password, inviteCode: this.inviteCode, acceptedLegal: this.acceptedLegal })
           })
           const result = await response.json()
           if (!response.ok) throw new Error(result.error || '注册失败')
