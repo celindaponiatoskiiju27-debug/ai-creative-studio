@@ -2,3 +2,49 @@
 .model-select-field > small { display:block; margin-top:8px; color:#8b8fa3; font-size:12px; }
 .model-menu button.unavailable { opacity:.45; cursor:not-allowed; background:#f4f4f6; }
 .model-menu button.unavailable:hover { border-color:transparent; transform:none; }
+
+/* Unified select controls across the customer app and admin console. */
+select:not([multiple]) {
+  min-height: 40px;
+  padding: 0 42px 0 13px !important;
+  border: 1px solid #dfe1e8 !important;
+  border-radius: 11px !important;
+  outline: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #fff !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237657ff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 13px center !important;
+  background-size: 15px !important;
+  color: #292b35;
+  font: 500 12px/1.4 Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  box-shadow: 0 1px 2px rgba(23, 24, 33, .025);
+  cursor: pointer;
+  transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+select:not([multiple]):hover {
+  border-color: #b9adf4 !important;
+  background-color: #fdfcff !important;
+}
+select:not([multiple]):focus,
+select:not([multiple]):focus-visible {
+  border-color: #8065f6 !important;
+  box-shadow: 0 0 0 3px rgba(118, 87, 255, .12), 0 5px 16px rgba(80, 57, 180, .07) !important;
+}
+select:not([multiple]):disabled {
+  border-color: #e7e8ed !important;
+  background-color: #f4f5f7 !important;
+  color: #a1a4ad;
+  cursor: not-allowed;
+  opacity: .8;
+}
+select option {
+  min-height: 38px;
+  padding: 10px 12px;
+  background: #fff;
+  color: #292b35;
+  font-size: 12px;
+}
+select option:checked { background: #7657ff; color: #fff; }
+select option:disabled { color: #a9acb5; }
