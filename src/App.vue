@@ -251,8 +251,10 @@
           </div>
           <div v-else-if="state === 'loading'" class="loading-state">
             <div class="loader"><i /><i /><i /></div>
-            <h3>正在构思你的作品</h3>
-            <p>AI 正在理解描述并绘制画面…</p>
+            <h3>{{ activeVideoJob ? videoJobTitle : '正在构思你的作品' }}</h3>
+            <p>{{ activeVideoJob ? videoJobMessage : 'AI 正在理解描述并绘制画面…' }}</p>
+            <div v-if="activeVideoJob" class="job-progress"><i :style="{ width: `${activeVideoJob.progress || 0}%` }" /></div>
+            <small v-if="activeVideoJob">任务已保存到云端，关闭页面也会继续生成</small>
           </div>
           <div v-else class="result-grid">
             <article
@@ -537,6 +539,8 @@ export default {
       referenceImages: [],
       results: [],
       currentUsageId: "",
+      activeVideoJob: null,
+      videoJobTimer: null,
       feedbackSelections: {},
       resultType: "image",
       favorites: [],
@@ -679,6 +683,14 @@ export default {
       const selected = this.videoModels.find(item => item.id === this.videoModelId);
       return Math.max(0, Number(this.videoMode === 'image' ? (selected?.creditCost ?? 6) : (selected?.textCreditCost ?? 25)));
     },
+    videoJobTitle() {
+      return ({ queued: '任务正在排队', processing: 'AI 正在生成视频', converting: '正在转换 GIF' })[this.activeVideoJob?.status] || '正在处理任务';
+    },
+    videoJobMessage() {
+      if (this.activeVideoJob?.status === 'queued') return this.activeVideoJob.queuePosition > 1 ? `前面还有 ${this.activeVideoJob.queuePosition - 1} 个任务` : '即将开始生成，请稍候…';
+      if (this.activeVideoJob?.status === 'converting') return '视频已经生成，正在进行 GIF 转码…';
+      return '模型正在生成内容，通常需要几分钟…';
+    },
     requiredCredits() {
       if (this.page === 'video') return this.videoCredits;
       return Math.max(0, Number(this.model?.creditCost ?? (this.referenceImages.length ? 3 : 2))) * this.count;
@@ -709,12 +721,12 @@ export default {
     if (!supabaseConfigured) { this.authReady = true; return }
     const { data } = await supabase.auth.getSession()
     this.session = data.session
-    if (this.session) { await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); }
+    if (this.session) { await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); await this.restoreActiveVideoJob(); }
     const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'PASSWORD_RECOVERY') this.passwordRecovery = true
       this.session = session
       this.profile = null
-      if (session) { this.authOpen = false; await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); }
+      if (session) { this.authOpen = false; await this.loadProfile(); await this.loadFavorites().catch(error => { this.assetError = error.message; }); await this.restoreActiveVideoJob(); }
     })
     this.authSubscription = listener.subscription
     this.authReady = true
@@ -722,6 +734,7 @@ export default {
   beforeDestroy() {
     this.authSubscription?.unsubscribe()
     if (this.supportTimer) clearInterval(this.supportTimer)
+    if (this.videoJobTimer) clearTimeout(this.videoJobTimer)
     this.referenceImages.forEach(item => URL.revokeObjectURL(item.url))
   },
   methods: {
@@ -762,6 +775,46 @@ export default {
     authHeaders(extra = {}) {
       return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
     },
+    async restoreActiveVideoJob() {
+      if (!this.session || this.activeVideoJob) return;
+      try {
+        const response = await fetch('/api/video-jobs/active', { headers: this.authHeaders() });
+        const data = await response.json();
+        if (response.ok && data.job) {
+          this.page = 'video'; this.videoMode = data.job.mode; this.resultType = data.job.outputFormat === 'gif' ? 'gif' : 'video';
+          this.startVideoJobPolling(data.job);
+        }
+      } catch (_error) {}
+    },
+    startVideoJobPolling(job) {
+      this.activeVideoJob = job; this.loading = true; this.state = 'loading'; this.currentUsageId = job.usageId || '';
+      if (this.videoJobTimer) clearTimeout(this.videoJobTimer);
+      this.videoJobTimer = setTimeout(() => this.pollVideoJob(job.id), 1500);
+    },
+    async pollVideoJob(jobId) {
+      try {
+        const response = await fetch(`/api/video-jobs/${encodeURIComponent(jobId)}`, { headers: this.authHeaders() });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '读取任务状态失败');
+        this.activeVideoJob = data.job;
+        if (data.job.status === 'completed') {
+          this.results = data.job.outputs || []; this.currentUsageId = data.job.usageId || '';
+          this.resultType = data.job.outputFormat === 'gif' ? 'gif' : 'video'; this.state = 'done'; this.loading = false; this.activeVideoJob = null;
+          this.trackEvent('generation_success', { type: this.resultType });
+          await this.loadProfile().catch(() => {});
+          return;
+        }
+        if (data.job.status === 'failed') {
+          this.errorMessage = `${data.job.error || '生成失败'}；本次算力已自动退还`;
+          this.loading = false; this.activeVideoJob = null; this.state = this.results.length ? 'done' : 'empty';
+          await this.loadProfile().catch(() => {});
+          return;
+        }
+      } catch (error) {
+        this.errorMessage = `${error.message}，正在自动重试查询`;
+      }
+      this.videoJobTimer = setTimeout(() => this.pollVideoJob(jobId), 3000);
+    },
     async loadFavorites() {
       if (!this.session) { this.favorites = []; return; }
       const response = await fetch('/api/favorites', { headers: this.authHeaders() }); const data = await response.json();
@@ -782,6 +835,7 @@ export default {
     async loadAssetPage(page) {
       if (!this.session) { this.requestLogin('请先登录后查看个人资产'); return; }
       this.assetLoading = true; this.assetError = '';
+      let keepLoading = false;
       try {
         if (page === 'works') {
           const response = await fetch('/api/usage', { headers: this.authHeaders() }); const data = await response.json();
@@ -1226,6 +1280,10 @@ export default {
         }
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || "生成失败");
+        if (this.page === 'video' && data.job) {
+          if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
+          keepLoading = true; this.startVideoJobPolling(data.job); return;
+        }
         this.results = this.page === 'video'
           ? (this.videoMode === 'image' ? (data.gifs || []) : (data.videos || []))
           : data.images;
@@ -1241,7 +1299,7 @@ export default {
         await this.loadProfile().catch(() => {});
         this.state = this.results.length ? "done" : "empty";
       } finally {
-        this.loading = false;
+        if (!keepLoading) this.loading = false;
       }
     },
   },
@@ -1265,6 +1323,7 @@ export default {
 .reference-add small { margin: 3px 0 0; font-size: 9px; }
 .generate-btn.loading { pointer-events: none; cursor: wait; opacity: .82; transform: none; }
 .button-spinner { width: 17px; height: 17px; border: 2px solid #ffffff66; border-top-color: #fff; border-radius: 50%; animation: button-spin .7s linear infinite; }
+.job-progress{width:min(320px,78%);height:7px;margin:15px auto 9px;overflow:hidden;border-radius:999px;background:#ebe8f5}.job-progress i{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#6547ff,#a67dff);transition:width .35s ease}.loading-state>small{color:#9295a0;font-size:10px}
 @keyframes button-spin { to { transform: rotate(360deg); } }
 .copywriter-view { height: calc(100vh - 82px); min-height: 650px; padding: 22px; display: grid; grid-template-columns: minmax(360px, 440px) 1fr; gap: 18px; }
 .copy-form-card, .copy-result-card { padding: 22px; border: 1px solid #e9eaf0; border-radius: 18px; background: #fff; box-shadow: 0 4px 18px #24254108; overflow: auto; }

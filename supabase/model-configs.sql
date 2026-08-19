@@ -39,8 +39,8 @@ values
   ('video', 'aliyun', 'wan2.6-i2v-flash', '通义万相 2.6', '国内默认 · 图生 GIF 与低成本文生视频', 'wan2.6-t2v', 10, 6, 25, true, true, true),
   ('video', 'tencent', 'pixverse-video-c1', 'PixVerse C1', '腾讯 TokenHub · 高动态视频，适合图片动起来与 GIF', 'pixverse-video-c1', 20, 10, 20, true, true, true),
   ('video', 'tencent', 'kling-video-v3', 'Kling V3', '腾讯 TokenHub · 高质量视频，支持智能分镜', 'kling-video-v3', 30, 24, 40, true, true, true),
-  ('video', 'fal', 'fal-ai/kling-video/v1.6/standard/image-to-video', 'Kling 1.6（Fal）', '海外高质量备用视频模型', 'fal-ai/kling-video/v1.6/standard/text-to-video', 80, 20, 35, true, true, true),
-  ('video', 'fal', 'fal-ai/ltx-video/image-to-video', 'LTX Video（Fal）', '海外备用图生动态与视频模型', '', 90, 12, 30, true, true, true)
+  ('video', 'fal', 'fal-ai/kling-video/v1.6/standard/image-to-video', 'Kling 1.6（Fal）', '海外备用 · 当前无额度，保留配置', 'fal-ai/kling-video/v1.6/standard/text-to-video', 80, 20, 35, true, true, false),
+  ('video', 'fal', 'fal-ai/ltx-video/image-to-video', 'LTX Video（Fal）', '海外备用 · 当前无额度，保留配置', '', 90, 12, 30, true, true, false)
 on conflict (type, provider, model_id) do update set
   name = excluded.name,
   description = excluded.description,

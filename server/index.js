@@ -84,6 +84,12 @@ let supabaseInstance
 const registrationAttempts = new Map()
 const promptEnhanceAttempts = new Map()
 const productEventAttempts = new Map()
+const VIDEO_JOB_CONCURRENCY = Math.max(1, Math.min(5, Number(process.env.VIDEO_JOB_CONCURRENCY || 2)))
+const GIF_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.GIF_CONCURRENCY || 1)))
+let activeVideoJobs = 0
+let activeGifConversions = 0
+let videoPumpRunning = false
+const gifWaiters = []
 
 function allowPromptEnhance(userId) {
   const now = Date.now()
@@ -337,7 +343,7 @@ function modelCatalog() {
   const openAITextReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
   const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
-  const falReady = Boolean(process.env.FAL_KEY)
+  const falReady = Boolean(process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')
   const source = type => databaseModels.filter(item => item.type === type)
   const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [
     { id: 'qwen-image-2.0', name: '千问图像 2.0', provider: 'aliyun', description: '国内默认 · 高性价比文生图与编辑', creditCost: 2, supportsGenerate: true, supportsEdit: true, enabled: true },
@@ -684,6 +690,92 @@ async function videoToGif(videoUrl) {
   }
 }
 
+async function withGifSlot(operation) {
+  if (activeGifConversions >= GIF_CONCURRENCY) await new Promise(resolve => gifWaiters.push(resolve))
+  activeGifConversions += 1
+  try { return await operation() }
+  finally {
+    activeGifConversions -= 1
+    gifWaiters.shift()?.()
+  }
+}
+
+async function updateVideoJob(jobId, patch) {
+  const { error } = await supabaseAdmin().from('video_generation_jobs').update({ ...patch, updated_at: new Date().toISOString() }).eq('id', jobId)
+  if (error) throw error
+}
+
+async function loadVideoJobInput(job) {
+  if (job.mode !== 'image') return undefined
+  if (!job.input_path) throw new Error('视频任务缺少输入图片')
+  const { data, error } = await supabaseAdmin().storage.from('generation-inputs').download(job.input_path)
+  if (error) throw error
+  return {
+    buffer: Buffer.from(await data.arrayBuffer()),
+    mimetype: job.input_mime || data.type || 'image/jpeg',
+    originalname: path.basename(job.input_path)
+  }
+}
+
+async function processVideoJob(job) {
+  try {
+    const file = await loadVideoJobInput(job)
+    await refreshModelConfigs()
+    await updateVideoJob(job.id, { progress: 15 })
+    const generatedVideo = await withModelFallback('video', job.model_id, selected => generateVideo({ file, mode: job.mode, prompt: job.prompt, ratio: job.ratio, selected }))
+    let outputs
+    if (job.output_format === 'gif') {
+      await updateVideoJob(job.id, { status: 'converting', progress: 80 })
+      outputs = [await withGifSlot(() => videoToGif(generatedVideo.result))]
+    } else {
+      outputs = [generatedVideo.result]
+    }
+    const storedOutputs = await archiveOrOriginal(job.user_id, job.usage_id, outputs)
+    await finishGeneration(job.usage_id, true)
+    await updateVideoJob(job.id, { status: 'completed', progress: 100, output_urls: storedOutputs, finished_at: new Date().toISOString() })
+  } catch (error) {
+    console.error('[video-job]', job.id, error.message)
+    await rollbackGeneration(job.usage_id, error)
+    await updateVideoJob(job.id, { status: 'failed', progress: 100, error_message: String(error.message || '视频生成失败').slice(0, 1000), finished_at: new Date().toISOString() }).catch(updateError => console.error('[video-job-update]', job.id, updateError.message))
+  } finally {
+    if (job.input_path) await supabaseAdmin().storage.from('generation-inputs').remove([job.input_path]).catch(() => {})
+  }
+}
+
+async function claimVideoJob() {
+  const { data, error } = await supabaseAdmin().rpc('claim_video_generation_job')
+  if (error) {
+    if (error.code !== '42883' && error.code !== '42P01') console.error('[video-queue-claim]', error.message)
+    return null
+  }
+  return data?.[0] || null
+}
+
+async function pumpVideoJobs() {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return
+  if (videoPumpRunning) return
+  videoPumpRunning = true
+  try {
+    while (activeVideoJobs < VIDEO_JOB_CONCURRENCY) {
+      const job = await claimVideoJob()
+      if (!job) break
+      activeVideoJobs += 1
+      processVideoJob(job).finally(() => {
+        activeVideoJobs -= 1
+        setTimeout(pumpVideoJobs, 100)
+      })
+    }
+  } finally { videoPumpRunning = false }
+}
+
+function publicVideoJob(job, queuePosition = 0) {
+  return {
+    id: job.id, usageId: job.usage_id, mode: job.mode, outputFormat: job.output_format,
+    status: job.status, progress: job.progress, outputs: job.output_urls || [],
+    error: job.error_message || '', queuePosition, createdAt: job.created_at, updatedAt: job.updated_at
+  }
+}
+
 async function archiveOutputs(userId, usageId, urls) {
   const archived = []
   const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'video/mp4': 'mp4', 'video/webm': 'webm' }
@@ -780,7 +872,7 @@ app.get('/api/health', (_req, res) => res.json({
   configured: Boolean(process.env.OPENAI_API_KEY),
   tencentConfigured: Boolean(process.env.TENCENT_API_KEY),
   textConfigured: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-  videoConfigured: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || process.env.FAL_KEY),
+  videoConfigured: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')),
   mock: mockEnabled,
   model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
   videoModel: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'),
@@ -1096,7 +1188,7 @@ app.get('/api/admin/system-health', requireUser, requireAdmin, async (_req, res,
     const configured = {
       supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
       image: Boolean(process.env.OPENAI_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.TENCENT_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-      video: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || process.env.FAL_KEY)
+      video: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true'))
     }
     for (const [provider, ok] of Object.entries(configured)) if (!ok) alerts.push({ level: 'critical', code: `provider_${provider}`, message: `${provider} 服务尚未完整配置` })
     res.json({ status: alerts.some(item => item.level === 'critical') ? 'critical' : (alerts.length ? 'warning' : 'healthy'), checkedAt: new Date().toISOString(), uptimeSeconds: Math.round(process.uptime()), configured, metrics: { failedHour, pending: pending.length, stale: stale.length, dayUsedFen, monthUsedFen, dayPercent, monthPercent }, alerts })
@@ -1844,6 +1936,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
 
 app.post('/api/videos/generate', requireUser, upload.single('image'), async (req, res, next) => {
   let usageId
+  let inputPath
   try {
     await refreshModelConfigs()
     const mode = req.body.mode === 'text' ? 'text' : 'image'
@@ -1853,18 +1946,47 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     const selectedVideoModel = selectedModel('video', req.body.modelId)
     const credits = Math.max(0, Number(mode === 'image' ? (selectedVideoModel.creditCost ?? CREDIT_PRICES.gif) : (selectedVideoModel.textCreditCost ?? CREDIT_PRICES.video)))
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: mode === 'image' ? 'gif_generation' : 'video_generation' }, credits, 1)
-    const generatedVideo = await withModelFallback('video', req.body.modelId, selected => generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio, selected }))
-    const videoUrl = generatedVideo.result
-    const generatedOutputs = mode === 'image' ? [await videoToGif(videoUrl)] : [videoUrl]
-    const storedOutputs = await archiveOrOriginal(req.user.id, usageId, generatedOutputs)
-    const payload = mode === 'image' ? { gifs: storedOutputs } : { videos: storedOutputs }
-    await finishGeneration(usageId, true)
+    if (req.file) {
+      const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[req.file.mimetype] || 'jpg'
+      inputPath = `${req.user.id}/${usageId}.${extension}`
+      const { error: uploadError } = await supabaseAdmin().storage.from('generation-inputs').upload(inputPath, req.file.buffer, { contentType: req.file.mimetype, upsert: true })
+      if (uploadError) throw uploadError
+    }
+    const { data: job, error: jobError } = await supabaseAdmin().from('video_generation_jobs').insert({
+      user_id: req.user.id, usage_id: usageId, mode, output_format: mode === 'image' ? 'gif' : 'mp4',
+      prompt: req.body.prompt.trim(), ratio: req.body.ratio || '16:9', model_id: selectedVideoModel.id,
+      input_path: inputPath || null, input_mime: req.file?.mimetype || null
+    }).select('*').single()
+    if (jobError) throw jobError
     const profile = await profileFor(req.user.id)
-    res.json({ ...payload, usageId, model: generatedVideo.model.id, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    queueMicrotask(() => pumpVideoJobs())
+    res.status(202).json({ job: publicVideoJob(job), usageId, model: selectedVideoModel.id, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
+    if (inputPath) await supabaseAdmin().storage.from('generation-inputs').remove([inputPath]).catch(() => {})
     await rollbackGeneration(usageId, error)
     next(error)
   }
+})
+
+app.get('/api/video-jobs/active', requireUser, async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('video_generation_jobs').select('*').eq('user_id', req.user.id).in('status', ['queued','processing','converting']).order('created_at').limit(1)
+    if (error) throw error
+    res.json({ job: data?.[0] ? publicVideoJob(data[0]) : null })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/video-jobs/:id', requireUser, async (req, res, next) => {
+  try {
+    const { data: job, error } = await supabaseAdmin().from('video_generation_jobs').select('*').eq('id', req.params.id).eq('user_id', req.user.id).single()
+    if (error) { error.status = error.code === 'PGRST116' ? 404 : undefined; throw error }
+    let queuePosition = 0
+    if (job.status === 'queued') {
+      const { count } = await supabaseAdmin().from('video_generation_jobs').select('id', { count: 'exact', head: true }).eq('status', 'queued').lt('created_at', job.created_at)
+      queuePosition = Number(count || 0) + 1
+    }
+    res.json({ job: publicVideoJob(job, queuePosition) })
+  } catch (error) { next(error) }
 })
 
 app.use(express.static(path.join(rootDir, 'dist')))
@@ -1891,4 +2013,8 @@ app.use((error, req, res, _next) => {
   })
 })
 
-app.listen(port, () => console.log(`AI API server running at http://localhost:${port}`))
+app.listen(port, () => {
+  console.log(`AI API server running at http://localhost:${port}`)
+  setTimeout(pumpVideoJobs, 1000)
+  setInterval(pumpVideoJobs, 5000).unref()
+})

@@ -25,4 +25,13 @@ on conflict (type, provider, model_id) do update set
   enabled = true,
   updated_at = now();
 
+update public.model_configs
+set enabled = false,
+    description = case
+      when model_id like '%kling%' then '海外备用 · 当前无额度，保留配置'
+      else '海外备用 · 当前无额度，保留配置'
+    end,
+    updated_at = now()
+where type = 'video' and provider = 'fal';
+
 commit;
