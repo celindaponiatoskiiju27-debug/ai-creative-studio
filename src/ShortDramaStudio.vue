@@ -1,0 +1,69 @@
+<template>
+  <section class="drama-studio">
+    <aside class="drama-setup">
+      <div class="drama-intro"><span>剧</span><div><b>AI短剧策划</b><small>先生成分镜，确认后逐镜生成，避免浪费算力</small></div></div>
+      <label>短剧主题<input v-model="form.premise" maxlength="500" placeholder="例如：新手店主用一件雨衣化解暴雨送货危机" /></label>
+      <div class="drama-grid"><label>类型<select v-model="form.genre"><option>电商剧情</option><option>反转故事</option><option>产品种草</option><option>轻喜剧</option><option>职场故事</option></select></label><label>成片时长<select v-model.number="form.duration"><option :value="30">约30秒</option><option :value="45">约45秒</option><option :value="60">约60秒</option></select></label></div>
+      <label>主要角色<textarea v-model="form.characters" maxlength="600" placeholder="角色1：25岁女店主，短发，米色风衣；角色2：年轻快递员，蓝色制服。请固定外貌和服装。" /></label>
+      <label>剧本模型<select v-model="textModelId"><option v-for="item in textModels" :key="item.id" :value="item.id" :disabled="!item.available">{{ item.name }}{{ item.available ? '' : '（不可用）' }}</option></select></label>
+      <button class="drama-primary" :disabled="planning" @click="createPlan"><i v-if="planning" />{{ planning ? '正在生成剧本与分镜…' : '✦ 生成短剧分镜 · 消耗2算力' }}</button>
+      <p v-if="error" class="drama-error">{{ error }}</p>
+      <div class="drama-projects"><header><b>我的短剧</b><button @click="loadProjects">刷新</button></header><button v-for="item in projects" :key="item.id" :class="{ active: project && project.id === item.id }" @click="openProject(item)"><span>{{ item.title }}</span><small>{{ item.target_duration }}秒 · {{ item.shots.length }}镜</small></button><p v-if="!projects.length">暂无项目，先生成第一部短剧</p></div>
+    </aside>
+
+    <main class="storyboard">
+      <div v-if="!project" class="drama-empty"><span>▦</span><h2>从故事到分镜</h2><p>填写左侧主题和角色，AI会生成一套可编辑的竖屏短剧分镜。</p></div>
+      <template v-else>
+        <header class="storyboard-head"><div><span>STORYBOARD</span><h2>{{ project.title }}</h2><p>{{ project.genre }} · 约{{ project.target_duration }}秒 · {{ project.shots.length }}个镜头</p></div><div><b>{{ completedCount }}/{{ project.shots.length }}</b><small>镜头已完成</small></div></header>
+        <div class="character-lock"><b>角色一致性设定</b><p>{{ characterSummary }}</p><small>生成每个镜头时会自动带入该设定；第一版仍建议使用相同服装、场景和明确外貌描述。</small></div>
+        <div class="shot-list">
+          <article v-for="shot in project.shots" :key="shot.id" class="shot-card">
+            <div class="shot-number"><b>{{ String(shot.shot_number).padStart(2,'0') }}</b><span>{{ shot.duration }}秒</span></div>
+            <div class="shot-edit"><div class="shot-row"><label>场景<input v-model="shot.scene" @change="saveShot(shot)" /></label><label>景别<select v-model="shot.shot_type" @change="saveShot(shot)"><option>特写</option><option>近景</option><option>中景</option><option>全景</option><option>航拍</option></select></label></div><label>视频提示词<textarea v-model="shot.visual_prompt" @change="saveShot(shot)" /></label><label>台词 / 旁白<input v-model="shot.dialogue" @change="saveShot(shot)" placeholder="第一版用于保存剧本，后续接入配音和字幕" /></label></div>
+            <div class="shot-result"><video v-if="shot.output_url" :src="shot.output_url" controls muted preload="metadata" /><div v-else class="shot-placeholder"><span>▷</span><small>{{ shotStatus(shot) }}</small></div><button :disabled="busyShotId || !availableVideoModel" @click="generateShot(shot)">{{ busyShotId === shot.id ? '生成中…' : (shot.output_url ? '重新生成' : '生成镜头') }}</button><small>约消耗 {{ videoCost }} 算力</small></div>
+          </article>
+        </div>
+        <div class="drama-next"><b>第一阶段已支持：剧本、分镜、逐镜视频和云端保存</b><span>配音、字幕、转场与一键合成将在第二阶段接入。</span></div>
+      </template>
+    </main>
+  </section>
+</template>
+
+<script>
+export default {
+  name: 'ShortDramaStudio',
+  props: { session: Object, textModels: { type: Array, default: () => [] }, videoModels: { type: Array, default: () => [] } },
+  data: () => ({ form: { premise: '', genre: '电商剧情', duration: 30, characters: '' }, textModelId: '', projects: [], project: null, planning: false, busyShotId: '', error: '', pollTimer: null }),
+  computed: {
+    availableVideoModel() { return this.videoModels.find(item => item.available && item.textModel) || this.videoModels.find(item => item.available); },
+    videoCost() { return Math.max(0, Number(this.availableVideoModel?.textCreditCost ?? 25)); },
+    completedCount() { return this.project?.shots?.filter(item => item.status === 'completed').length || 0; },
+    characterSummary() { return Array.isArray(this.project?.characters) ? this.project.characters.map(item => `${item.name || '角色'}：${item.description || item}`).join('；') : String(this.project?.characters || ''); }
+  },
+  mounted() { this.textModelId = this.textModels.find(item => item.available)?.id || this.textModels[0]?.id || ''; if (this.session) this.loadProjects(); },
+  beforeDestroy() { if (this.pollTimer) clearTimeout(this.pollTimer); },
+  methods: {
+    headers(extra = {}) { return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }; },
+    async loadProjects() { try { const response = await fetch('/api/dramas', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取短剧失败'); this.projects = data.projects || []; if (this.project) this.project = this.projects.find(item => item.id === this.project.id) || this.project; } catch (error) { this.error = error.message; } },
+    openProject(item) { this.project = JSON.parse(JSON.stringify(item)); this.error = ''; },
+    async createPlan() {
+      if (!this.session) { this.$emit('login'); return; } if (this.planning) return; if (this.form.premise.trim().length < 8) { this.error = '请至少用8个字描述短剧主题'; return; }
+      this.planning = true; this.error = '';
+      try { const response = await fetch('/api/dramas/plan', { method: 'POST', headers: this.headers({ 'Content-Type':'application/json' }), body: JSON.stringify({ ...this.form, modelId: this.textModelId }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '生成分镜失败'); this.projects.unshift(data.project); this.openProject(data.project); this.$emit('credits', data.credits); }
+      catch (error) { this.error = error.message; } finally { this.planning = false; }
+    },
+    async saveShot(shot, extra = {}) { try { const response = await fetch(`/api/dramas/${this.project.id}/shots/${shot.id}`, { method:'PATCH', headers:this.headers({ 'Content-Type':'application/json' }), body:JSON.stringify({ scene:shot.scene, shotType:shot.shot_type, visualPrompt:shot.visual_prompt, dialogue:shot.dialogue, ...extra }) }); const data=await response.json(); if(!response.ok) throw new Error(data.error || '保存镜头失败'); Object.assign(shot,data.shot); } catch(error){ this.error=error.message; } },
+    async generateShot(shot) {
+      if (!this.session) { this.$emit('login'); return; } if (!this.availableVideoModel || this.busyShotId) return; this.busyShotId = shot.id; this.error = '';
+      try { const body = new FormData(); body.append('mode','text'); body.append('outputFormat','mp4'); body.append('ratio','9:16'); body.append('modelId',this.availableVideoModel.id); body.append('dramaProjectId',this.project.id); body.append('dramaShotId',shot.id); body.append('prompt',`${this.characterSummary}。${shot.scene}。${shot.visual_prompt}。竖屏短剧镜头，角色外貌和服装保持一致，不出现字幕和水印。`); const response=await fetch('/api/videos/generate',{method:'POST',headers:this.headers(),body}); const data=await response.json(); if(!response.ok) throw new Error(data.error || '镜头任务提交失败'); shot.status='queued'; shot.video_job_id=data.job.id; this.$emit('credits',data.credits); this.pollShot(shot,data.job.id); }
+      catch(error){this.error=error.message;this.busyShotId='';}
+    },
+    async pollShot(shot,jobId){ try{const response=await fetch(`/api/video-jobs/${jobId}`,{headers:this.headers()});const data=await response.json();if(!response.ok)throw new Error(data.error||'查询镜头失败');shot.status=data.job.status==='processing'||data.job.status==='converting'?'generating':data.job.status;if(data.job.status==='completed'){shot.output_url=data.job.outputs[0]||'';await this.saveShot(shot,{status:'completed',outputUrl:shot.output_url,videoJobId:jobId});this.busyShotId='';this.$emit('refresh-credits');return}if(data.job.status==='failed'){await this.saveShot(shot,{status:'failed',videoJobId:jobId});this.error=data.job.error||'镜头生成失败，算力已退还';this.busyShotId='';this.$emit('refresh-credits');return}}catch(error){this.error=`${error.message}，正在重试`;}this.pollTimer=setTimeout(()=>this.pollShot(shot,jobId),3000);},
+    shotStatus(shot){return({draft:'等待生成',queued:'排队中',generating:'生成中',failed:'生成失败'})[shot.status]||'等待生成';}
+  }
+}
+</script>
+
+<style scoped>
+.drama-studio{height:calc(100vh - 65px);padding:22px;display:grid;grid-template-columns:370px 1fr;gap:18px;background:#f5f6fa}.drama-setup,.storyboard{overflow:auto;border:1px solid #e8e9ef;border-radius:18px;background:#fff;box-shadow:0 5px 20px #20213a08}.drama-setup{padding:20px}.drama-intro{display:flex;align-items:center;gap:12px;padding:14px;border-radius:13px;background:linear-gradient(120deg,#eee9ff,#faf9ff)}.drama-intro>span{width:43px;height:43px;display:grid;place-items:center;border-radius:12px;background:#7657ff;color:#fff;font-weight:800}.drama-intro div{display:flex;flex-direction:column;gap:4px}.drama-intro small,.drama-setup label small{color:#8e919b}.drama-setup>label,.drama-grid label{display:flex;flex-direction:column;gap:7px;margin-top:15px;font-size:12px;font-weight:700}.drama-setup input,.drama-setup textarea,.drama-setup select,.shot-edit input,.shot-edit textarea,.shot-edit select{width:100%;box-sizing:border-box;border:1px solid #dedfe7;border-radius:10px;background:#fff;outline:0;font:12px/1.6 inherit}.drama-setup input,.drama-setup select,.shot-edit input,.shot-edit select{height:42px;padding:0 11px}.drama-setup textarea{height:95px;padding:10px;resize:vertical}.drama-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.drama-primary{width:100%;height:49px;margin-top:18px;border:0;border-radius:12px;background:linear-gradient(90deg,#6749ff,#9871ff);color:#fff;font-weight:800;cursor:pointer}.drama-primary:disabled{opacity:.65}.drama-primary i{display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid #fff5;border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}.drama-error{padding:9px;border-radius:8px;background:#fff0f0;color:#c43;font-size:11px}.drama-projects{margin-top:22px;padding-top:15px;border-top:1px solid #eee}.drama-projects header{display:flex;justify-content:space-between;margin-bottom:8px}.drama-projects header button{border:0;background:none;color:#7657ff;cursor:pointer}.drama-projects>button{width:100%;padding:10px;margin:4px 0;border:1px solid transparent;border-radius:9px;background:#f8f8fa;text-align:left;display:flex;justify-content:space-between;cursor:pointer}.drama-projects>button.active{border-color:#bcb0ff;background:#f3f0ff}.drama-projects small,.drama-projects p{color:#92959e;font-size:10px}.storyboard{padding:22px}.drama-empty{height:100%;display:grid;place-content:center;text-align:center}.drama-empty>span{margin:auto;font-size:42px;color:#7657ff}.drama-empty p{color:#92959e}.storyboard-head{display:flex;justify-content:space-between;align-items:center}.storyboard-head span{color:#7657ff;font-size:9px;font-weight:800;letter-spacing:2px}.storyboard-head h2{margin:5px 0}.storyboard-head p{margin:0;color:#8d9099;font-size:11px}.storyboard-head>div:last-child{display:flex;flex-direction:column;align-items:flex-end}.storyboard-head>div:last-child b{font-size:22px;color:#7657ff}.storyboard-head small{color:#999}.character-lock{margin:18px 0;padding:14px;border:1px solid #e5defe;border-radius:12px;background:#faf8ff}.character-lock p{margin:7px 0;font-size:11px;line-height:1.7}.character-lock small{color:#888;font-size:9px}.shot-list{display:flex;flex-direction:column;gap:12px}.shot-card{padding:14px;border:1px solid #e9eaf0;border-radius:14px;display:grid;grid-template-columns:55px minmax(300px,1fr) 145px;gap:13px}.shot-number{display:flex;flex-direction:column;align-items:center}.shot-number b{font-size:20px;color:#7657ff}.shot-number span{font-size:9px;color:#999}.shot-edit{display:flex;flex-direction:column;gap:8px}.shot-edit label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700}.shot-row{display:grid;grid-template-columns:1fr 90px;gap:7px}.shot-edit textarea{height:68px;padding:8px;resize:vertical}.shot-result video,.shot-placeholder{width:100%;height:90px;border-radius:9px;background:#17181d}.shot-result video{object-fit:cover}.shot-placeholder{display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff}.shot-placeholder span{font-size:21px}.shot-result>button{width:100%;height:33px;margin-top:7px;border:0;border-radius:8px;background:#7657ff;color:#fff;cursor:pointer}.shot-result>button:disabled{opacity:.55}.shot-result>small{display:block;margin-top:4px;text-align:center;color:#999;font-size:8px}.drama-next{margin-top:16px;padding:13px;border-radius:11px;background:#f4f5f8;display:flex;justify-content:space-between;font-size:10px}.drama-next span{color:#888}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:900px){.drama-studio{height:auto;grid-template-columns:1fr}.drama-setup,.storyboard{overflow:visible}.shot-card{grid-template-columns:45px 1fr}.shot-result{grid-column:2}.drama-next{flex-direction:column;gap:5px}}@media(max-width:560px){.drama-studio{padding:10px}.shot-card{grid-template-columns:1fr}.shot-number{flex-direction:row;gap:8px;justify-content:flex-start}.shot-result{grid-column:auto}.shot-row{grid-template-columns:1fr}.drama-grid{grid-template-columns:1fr}}
+</style>

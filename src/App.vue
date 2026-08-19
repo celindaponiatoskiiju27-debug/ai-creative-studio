@@ -274,6 +274,7 @@
           <div v-if="state === 'done' && currentUsageId" class="generation-feedback media-feedback"><span>这次结果有帮助吗？</span><button :class="{ active: feedbackSelections[currentUsageId] === true }" @click="sendGenerationFeedback(currentUsageId,true)">👍 有帮助</button><button :class="{ active: feedbackSelections[currentUsageId] === false }" @click="sendGenerationFeedback(currentUsageId,false)">👎 不满意</button></div>
         </div>
       </section>
+      <ShortDramaStudio v-else-if="page === 'drama'" :session="session" :text-models="textModels" :video-models="videoModels" @login="requestLogin('请先登录后创建AI短剧')" @credits="updateCredits" @refresh-credits="loadProfile" />
       <section v-else-if="page === 'canvas'" class="design-view">
         <aside class="design-controls">
           <div class="design-block">
@@ -442,11 +443,12 @@
 import AuthModal from './AuthModal.vue'
 import AccountModal from './AccountModal.vue'
 import LegalModal from './LegalModal.vue'
+import ShortDramaStudio from './ShortDramaStudio.vue'
 import { supabase, supabaseConfigured } from './supabase'
 
 export default {
   name: "App",
-  components: { AuthModal, AccountModal, LegalModal },
+  components: { AuthModal, AccountModal, LegalModal, ShortDramaStudio },
   data() {
     const models = [{ id: "gpt-image-2", name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型", available: true }];
     return {
@@ -456,6 +458,7 @@ export default {
         { id: "copy", name: "电商文案", icon: "文", new: true },
         { id: "image", name: "图片生成", icon: "▧" },
         { id: "video", name: "视频生成", icon: "▷", new: true },
+        { id: "drama", name: "AI短剧", icon: "剧", new: true },
         { id: "canvas", name: "电商设计", icon: "⌘", new: true },
         { id: "community", name: "灵感广场", icon: "◎", new: true },
         { label: "资产" },
@@ -467,6 +470,7 @@ export default {
         copy: ["电商文案", "为电商商品生成高转化营销内容"],
         image: ["图片生成", "把你的想象变成画面"],
         video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
+        drama: ["AI短剧工作台", "生成剧本、分镜并逐镜制作竖屏短剧"],
         canvas: ["电商设计", "快速制作商品主图与营销海报"],
         community: ["灵感广场", "浏览真实作品，参考提示词并生成同款"],
         works: ["我的作品", "管理你的创作资产"],
@@ -775,6 +779,7 @@ export default {
     authHeaders(extra = {}) {
       return { ...extra, Authorization: `Bearer ${this.session?.access_token || ''}` }
     },
+    updateCredits(credits) { if (typeof credits === 'number' && this.profile) this.profile = { ...this.profile, credits }; },
     async restoreActiveVideoJob() {
       if (!this.session || this.activeVideoJob) return;
       try {

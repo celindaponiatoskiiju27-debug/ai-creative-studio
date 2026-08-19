@@ -294,6 +294,22 @@ function responseText(response) {
   return ''
 }
 
+function parseJsonResponse(text) {
+  const cleaned = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  try { return JSON.parse(cleaned) }
+  catch (_error) {
+    const start = cleaned.indexOf('{'); const end = cleaned.lastIndexOf('}')
+    if (start >= 0 && end > start) return JSON.parse(cleaned.slice(start, end + 1))
+    throw new Error('AI返回的短剧分镜格式不正确，请重新生成')
+  }
+}
+
+function publicDramaProject(row) {
+  const shots = (row.short_drama_shots || row.shots || []).slice().sort((a, b) => a.shot_number - b.shot_number)
+  const { short_drama_shots: _nested, ...project } = row
+  return { ...project, shots }
+}
+
 function videoProvider() {
   return (process.env.VIDEO_PROVIDER || 'fal').trim().toLowerCase()
 }
@@ -705,6 +721,21 @@ async function updateVideoJob(jobId, patch) {
   if (error) throw error
 }
 
+async function syncDramaShotFromJob(job, status, outputUrl = null) {
+  try {
+    const patch = { status, updated_at: new Date().toISOString() }
+    if (outputUrl) patch.output_url = outputUrl
+    const { data: shot, error } = await supabaseAdmin().from('short_drama_shots').update(patch).eq('video_job_id', job.id).select('project_id').maybeSingle()
+    if (error) throw error
+    if (!shot?.project_id) return
+    const { data: shots } = await supabaseAdmin().from('short_drama_shots').select('status').eq('project_id', shot.project_id)
+    const projectStatus = shots?.length && shots.every(item => item.status === 'completed') ? 'completed' : 'generating'
+    await supabaseAdmin().from('short_drama_projects').update({ status: projectStatus, updated_at: new Date().toISOString() }).eq('id', shot.project_id)
+  } catch (error) {
+    if (error.code !== '42P01') console.error('[drama-shot-sync]', job.id, error.message)
+  }
+}
+
 async function loadVideoJobInput(job) {
   if (job.mode !== 'image') return undefined
   if (!job.input_path) throw new Error('视频任务缺少输入图片')
@@ -733,10 +764,12 @@ async function processVideoJob(job) {
     const storedOutputs = await archiveOrOriginal(job.user_id, job.usage_id, outputs)
     await finishGeneration(job.usage_id, true)
     await updateVideoJob(job.id, { status: 'completed', progress: 100, output_urls: storedOutputs, finished_at: new Date().toISOString() })
+    await syncDramaShotFromJob(job, 'completed', storedOutputs[0] || null)
   } catch (error) {
     console.error('[video-job]', job.id, error.message)
     await rollbackGeneration(job.usage_id, error)
     await updateVideoJob(job.id, { status: 'failed', progress: 100, error_message: String(error.message || '视频生成失败').slice(0, 1000), finished_at: new Date().toISOString() }).catch(updateError => console.error('[video-job-update]', job.id, updateError.message))
+    await syncDramaShotFromJob(job, 'failed')
   } finally {
     if (job.input_path) await supabaseAdmin().storage.from('generation-inputs').remove([job.input_path]).catch(() => {})
   }
@@ -1782,6 +1815,71 @@ app.get('/api/billing/transactions', requireUser, async (req, res, next) => {
   catch (error) { next(error) }
 })
 
+app.get('/api/dramas', requireUser, async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin().from('short_drama_projects').select('*,short_drama_shots(*)').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(30)
+    if (error) throw error
+    res.json({ projects: (data || []).map(publicDramaProject) })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/dramas/plan', requireUser, async (req, res, next) => {
+  let usageId
+  try {
+    await refreshModelConfigs()
+    const premise = String(req.body.premise || '').trim().slice(0, 500)
+    const genre = String(req.body.genre || '电商剧情').trim().slice(0, 50)
+    const charactersInput = String(req.body.characters || '').trim().slice(0, 600)
+    const targetDuration = [30, 45, 60].includes(Number(req.body.duration)) ? Number(req.body.duration) : 30
+    const shotCount = Math.max(6, Math.min(12, Math.round(targetDuration / 5)))
+    if (premise.length < 8) return res.status(400).json({ error: '请至少用8个字描述短剧主题' })
+    await enforceContentSafety(req, `${premise}\n${charactersInput}`, 'copy_generation')
+    usageId = await reserveGeneration(req.user.id, { prompt: `AI短剧策划：${premise}`, count: 1, action: 'copy_generation' }, 2, 1)
+    const generated = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
+      instructions: `你是中文竖屏AI短剧导演。把用户主题设计成约${targetDuration}秒、共${shotCount}个镜头的完整短剧。要求开头3秒有钩子，中段有冲突，结尾有反转或行动引导；角色外貌、年龄、发型和服装在全部镜头中保持一致；每镜约5秒；视频提示词必须包含人物外貌服装、场景、动作、镜头运动、光线和竖屏构图；不要生成违规、欺诈、侵权或夸大功效内容。只返回严格JSON，不要Markdown。JSON结构：{"title":"标题","characters":[{"name":"角色名","description":"固定外貌服装"}],"shots":[{"shot_number":1,"duration":5,"scene":"场景","shot_type":"景别","visual_prompt":"详细视频提示词","dialogue":"台词或旁白"}]}`,
+      input: `类型：${genre}\n主题：${premise}\n用户提供的角色设定：${charactersInput || '请根据剧情设计1至2名角色'}\n镜头数必须为${shotCount}个。`,
+      maxOutputTokens: 5000
+    }), retryableProviderError)
+    const plan = parseJsonResponse(generated.result)
+    const characters = Array.isArray(plan.characters) ? plan.characters.slice(0, 4).map((item, index) => typeof item === 'string' ? { name: `角色${index + 1}`, description: item.slice(0, 500) } : { name: String(item.name || `角色${index + 1}`).slice(0, 50), description: String(item.description || '').slice(0, 500) }) : []
+    const rawShots = Array.isArray(plan.shots) ? plan.shots.slice(0, shotCount) : []
+    if (rawShots.length < Math.min(4, shotCount)) throw new Error('AI返回的分镜数量不足，请重新生成')
+    const { data: project, error: projectError } = await supabaseAdmin().from('short_drama_projects').insert({ user_id: req.user.id, title: String(plan.title || premise).slice(0, 100), premise, genre, target_duration: targetDuration, characters }).select('*').single()
+    if (projectError) throw projectError
+    const shotRows = rawShots.map((shot, index) => ({ project_id: project.id, shot_number: index + 1, duration: Math.max(3, Math.min(15, Number(shot.duration) || 5)), scene: String(shot.scene || `镜头${index + 1}`).slice(0, 300), shot_type: String(shot.shot_type || '中景').slice(0, 30), visual_prompt: String(shot.visual_prompt || '').slice(0, 1500), dialogue: String(shot.dialogue || '').slice(0, 500) }))
+    const { data: shots, error: shotsError } = await supabaseAdmin().from('short_drama_shots').insert(shotRows).select('*')
+    if (shotsError) { await supabaseAdmin().from('short_drama_projects').delete().eq('id', project.id); throw shotsError }
+    await supabaseAdmin().from('usage_records').update({ output_text: JSON.stringify({ title: project.title, characters, shots: shotRows }) }).eq('id', usageId)
+    await finishGeneration(usageId, true)
+    const profile = await profileFor(req.user.id)
+    res.status(201).json({ project: publicDramaProject({ ...project, shots }), usageId, model: generated.model.id, credits: profile.credits })
+  } catch (error) { await rollbackGeneration(usageId, error); next(error) }
+})
+
+app.patch('/api/dramas/:projectId/shots/:shotId', requireUser, async (req, res, next) => {
+  try {
+    const { data: project, error: projectError } = await supabaseAdmin().from('short_drama_projects').select('id').eq('id', req.params.projectId).eq('user_id', req.user.id).single()
+    if (projectError || !project) { const error = new Error('短剧项目不存在'); error.status = 404; throw error }
+    const patch = {}
+    if (req.body.scene !== undefined) patch.scene = String(req.body.scene).trim().slice(0, 300)
+    if (req.body.shotType !== undefined) patch.shot_type = String(req.body.shotType).trim().slice(0, 30)
+    if (req.body.visualPrompt !== undefined) patch.visual_prompt = String(req.body.visualPrompt).trim().slice(0, 1500)
+    if (req.body.dialogue !== undefined) patch.dialogue = String(req.body.dialogue).trim().slice(0, 500)
+    if (['draft','queued','generating','completed','failed'].includes(req.body.status)) patch.status = req.body.status
+    if (req.body.videoJobId) patch.video_job_id = String(req.body.videoJobId)
+    if (req.body.outputUrl !== undefined) {
+      const outputUrl = String(req.body.outputUrl || '').trim().slice(0, 2000)
+      if (outputUrl && !/^https:\/\//i.test(outputUrl)) return res.status(400).json({ error: '视频地址格式不正确' })
+      patch.output_url = outputUrl || null
+    }
+    patch.updated_at = new Date().toISOString()
+    const { data: shot, error } = await supabaseAdmin().from('short_drama_shots').update(patch).eq('id', req.params.shotId).eq('project_id', project.id).select('*').single()
+    if (error) throw error
+    await supabaseAdmin().from('short_drama_projects').update({ status: shot.status === 'completed' ? 'generating' : 'storyboard', updated_at: new Date().toISOString() }).eq('id', project.id)
+    res.json({ shot })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/copy/generate', requireUser, async (req, res, next) => {
   let usageId
   try {
@@ -1937,6 +2035,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
 app.post('/api/videos/generate', requireUser, upload.single('image'), async (req, res, next) => {
   let usageId
   let inputPath
+  let jobId
   try {
     await refreshModelConfigs()
     const mode = req.body.mode === 'text' ? 'text' : 'image'
@@ -1958,10 +2057,20 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
       input_path: inputPath || null, input_mime: req.file?.mimetype || null
     }).select('*').single()
     if (jobError) throw jobError
+    jobId = job.id
+    if (req.body.dramaProjectId && req.body.dramaShotId) {
+      const { data: project } = await supabaseAdmin().from('short_drama_projects').select('id').eq('id', req.body.dramaProjectId).eq('user_id', req.user.id).maybeSingle()
+      if (!project) { const error = new Error('短剧项目不存在'); error.status = 404; throw error }
+      const { data: linkedShot, error: shotError } = await supabaseAdmin().from('short_drama_shots').update({ video_job_id: job.id, status: 'queued', updated_at: new Date().toISOString() }).eq('id', req.body.dramaShotId).eq('project_id', project.id).select('id').maybeSingle()
+      if (shotError) throw shotError
+      if (!linkedShot) { const error = new Error('短剧镜头不存在'); error.status = 404; throw error }
+      await supabaseAdmin().from('short_drama_projects').update({ status: 'generating', updated_at: new Date().toISOString() }).eq('id', project.id)
+    }
     const profile = await profileFor(req.user.id)
     queueMicrotask(() => pumpVideoJobs())
     res.status(202).json({ job: publicVideoJob(job), usageId, model: selectedVideoModel.id, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
+    if (jobId) { try { await supabaseAdmin().from('video_generation_jobs').delete().eq('id', jobId) } catch (_cleanupError) {} }
     if (inputPath) await supabaseAdmin().storage.from('generation-inputs').remove([inputPath]).catch(() => {})
     await rollbackGeneration(usageId, error)
     next(error)
