@@ -25,6 +25,13 @@ create table if not exists public.short_drama_shots (
   shot_type text not null default '中景',
   visual_prompt text not null,
   dialogue text not null default '',
+  speaker text not null default '旁白',
+  voice_id text not null default 'system-default',
+  voice_emotion text not null default 'natural',
+  voice_speed numeric(3,2) not null default 1.00 check (voice_speed between 0.80 and 1.30),
+  voice_volume numeric(3,2) not null default 1.00 check (voice_volume between 0.50 and 1.50),
+  audio_status text not null default 'draft' check (audio_status in ('draft','queued','completed','failed')),
+  audio_url text,
   status text not null default 'draft' check (status in ('draft','queued','generating','completed','failed')),
   video_job_id uuid references public.video_generation_jobs(id) on delete set null,
   output_url text,
@@ -32,6 +39,14 @@ create table if not exists public.short_drama_shots (
   updated_at timestamptz not null default now(),
   unique(project_id, shot_number)
 );
+
+alter table public.short_drama_shots add column if not exists speaker text not null default '旁白';
+alter table public.short_drama_shots add column if not exists voice_id text not null default 'system-default';
+alter table public.short_drama_shots add column if not exists voice_emotion text not null default 'natural';
+alter table public.short_drama_shots add column if not exists voice_speed numeric(3,2) not null default 1.00;
+alter table public.short_drama_shots add column if not exists voice_volume numeric(3,2) not null default 1.00;
+alter table public.short_drama_shots add column if not exists audio_status text not null default 'draft';
+alter table public.short_drama_shots add column if not exists audio_url text;
 
 create index if not exists short_drama_projects_user_idx on public.short_drama_projects(user_id, created_at desc);
 create index if not exists short_drama_shots_project_idx on public.short_drama_shots(project_id, shot_number);
@@ -49,4 +64,3 @@ create policy "users can read own drama shots" on public.short_drama_shots for s
 revoke insert, update, delete on public.short_drama_projects, public.short_drama_shots from anon, authenticated;
 grant select on public.short_drama_projects, public.short_drama_shots to authenticated;
 grant all privileges on public.short_drama_projects, public.short_drama_shots to service_role;
-

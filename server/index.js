@@ -1836,7 +1836,7 @@ app.post('/api/dramas/plan', requireUser, async (req, res, next) => {
     await enforceContentSafety(req, `${premise}\n${charactersInput}`, 'copy_generation')
     usageId = await reserveGeneration(req.user.id, { prompt: `AI短剧策划：${premise}`, count: 1, action: 'copy_generation' }, 2, 1)
     const generated = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
-      instructions: `你是中文竖屏AI短剧导演。把用户主题设计成约${targetDuration}秒、共${shotCount}个镜头的完整短剧。要求开头3秒有钩子，中段有冲突，结尾有反转或行动引导；角色外貌、年龄、发型和服装在全部镜头中保持一致；每镜约5秒；视频提示词必须包含人物外貌服装、场景、动作、镜头运动、光线和竖屏构图；不要生成违规、欺诈、侵权或夸大功效内容。只返回严格JSON，不要Markdown。JSON结构：{"title":"标题","characters":[{"name":"角色名","description":"固定外貌服装"}],"shots":[{"shot_number":1,"duration":5,"scene":"场景","shot_type":"景别","visual_prompt":"详细视频提示词","dialogue":"台词或旁白"}]}`,
+      instructions: `你是中文竖屏AI短剧导演。把用户主题设计成约${targetDuration}秒、共${shotCount}个镜头的完整短剧。要求开头3秒有钩子，中段有冲突，结尾有反转或行动引导；角色外貌、年龄、发型和服装在全部镜头中保持一致；每镜约5秒；视频提示词必须包含人物外貌服装、场景、动作、镜头运动、光线和竖屏构图；不要生成违规、欺诈、侵权或夸大功效内容。只返回严格JSON，不要Markdown。JSON结构：{"title":"标题","characters":[{"name":"角色名","description":"固定外貌服装"}],"shots":[{"shot_number":1,"duration":5,"scene":"场景","shot_type":"景别","visual_prompt":"详细视频提示词","speaker":"角色名或旁白","dialogue":"台词或旁白"}]}`,
       input: `类型：${genre}\n主题：${premise}\n用户提供的角色设定：${charactersInput || '请根据剧情设计1至2名角色'}\n镜头数必须为${shotCount}个。`,
       maxOutputTokens: 5000
     }), retryableProviderError)
@@ -1846,7 +1846,8 @@ app.post('/api/dramas/plan', requireUser, async (req, res, next) => {
     if (rawShots.length < Math.min(4, shotCount)) throw new Error('AI返回的分镜数量不足，请重新生成')
     const { data: project, error: projectError } = await supabaseAdmin().from('short_drama_projects').insert({ user_id: req.user.id, title: String(plan.title || premise).slice(0, 100), premise, genre, target_duration: targetDuration, characters }).select('*').single()
     if (projectError) throw projectError
-    const shotRows = rawShots.map((shot, index) => ({ project_id: project.id, shot_number: index + 1, duration: Math.max(3, Math.min(15, Number(shot.duration) || 5)), scene: String(shot.scene || `镜头${index + 1}`).slice(0, 300), shot_type: String(shot.shot_type || '中景').slice(0, 30), visual_prompt: String(shot.visual_prompt || '').slice(0, 1500), dialogue: String(shot.dialogue || '').slice(0, 500) }))
+    const characterNames = new Set(characters.map(item => item.name))
+    const shotRows = rawShots.map((shot, index) => ({ project_id: project.id, shot_number: index + 1, duration: Math.max(3, Math.min(15, Number(shot.duration) || 5)), scene: String(shot.scene || `镜头${index + 1}`).slice(0, 300), shot_type: String(shot.shot_type || '中景').slice(0, 30), visual_prompt: String(shot.visual_prompt || '').slice(0, 1500), speaker: characterNames.has(String(shot.speaker || '')) ? String(shot.speaker) : '旁白', dialogue: String(shot.dialogue || '').slice(0, 500) }))
     const { data: shots, error: shotsError } = await supabaseAdmin().from('short_drama_shots').insert(shotRows).select('*')
     if (shotsError) { await supabaseAdmin().from('short_drama_projects').delete().eq('id', project.id); throw shotsError }
     await supabaseAdmin().from('usage_records').update({ output_text: JSON.stringify({ title: project.title, characters, shots: shotRows }) }).eq('id', usageId)
@@ -1865,6 +1866,11 @@ app.patch('/api/dramas/:projectId/shots/:shotId', requireUser, async (req, res, 
     if (req.body.shotType !== undefined) patch.shot_type = String(req.body.shotType).trim().slice(0, 30)
     if (req.body.visualPrompt !== undefined) patch.visual_prompt = String(req.body.visualPrompt).trim().slice(0, 1500)
     if (req.body.dialogue !== undefined) patch.dialogue = String(req.body.dialogue).trim().slice(0, 500)
+    if (req.body.speaker !== undefined) patch.speaker = String(req.body.speaker || '旁白').trim().slice(0, 50)
+    if (req.body.voiceId !== undefined) patch.voice_id = String(req.body.voiceId || 'system-default').trim().slice(0, 300)
+    if (['natural','happy','sad','tense','excited'].includes(req.body.voiceEmotion)) patch.voice_emotion = req.body.voiceEmotion
+    if (req.body.voiceSpeed !== undefined) patch.voice_speed = Math.max(0.8, Math.min(1.3, Number(req.body.voiceSpeed) || 1))
+    if (req.body.voiceVolume !== undefined) patch.voice_volume = Math.max(0.5, Math.min(1.5, Number(req.body.voiceVolume) || 1))
     if (['draft','queued','generating','completed','failed'].includes(req.body.status)) patch.status = req.body.status
     if (req.body.videoJobId) patch.video_job_id = String(req.body.videoJobId)
     if (req.body.outputUrl !== undefined) {
@@ -1877,6 +1883,25 @@ app.patch('/api/dramas/:projectId/shots/:shotId', requireUser, async (req, res, 
     if (error) throw error
     await supabaseAdmin().from('short_drama_projects').update({ status: shot.status === 'completed' ? 'generating' : 'storyboard', updated_at: new Date().toISOString() }).eq('id', project.id)
     res.json({ shot })
+  } catch (error) { next(error) }
+})
+
+app.patch('/api/dramas/:projectId/voice', requireUser, async (req, res, next) => {
+  try {
+    const { data: project } = await supabaseAdmin().from('short_drama_projects').select('id').eq('id', req.params.projectId).eq('user_id', req.user.id).maybeSingle()
+    if (!project) return res.status(404).json({ error: '短剧项目不存在' })
+    const speaker = String(req.body.speaker || '').trim().slice(0, 50)
+    if (!speaker) return res.status(400).json({ error: '请选择需要应用音色的角色' })
+    const patch = {
+      voice_id: String(req.body.voiceId || 'system-default').trim().slice(0, 300),
+      voice_emotion: ['natural','happy','sad','tense','excited'].includes(req.body.voiceEmotion) ? req.body.voiceEmotion : 'natural',
+      voice_speed: Math.max(0.8, Math.min(1.3, Number(req.body.voiceSpeed) || 1)),
+      voice_volume: Math.max(0.5, Math.min(1.5, Number(req.body.voiceVolume) || 1)),
+      updated_at: new Date().toISOString()
+    }
+    const { data: shots, error } = await supabaseAdmin().from('short_drama_shots').update(patch).eq('project_id', project.id).eq('speaker', speaker).select('*')
+    if (error) throw error
+    res.json({ shots: shots || [] })
   } catch (error) { next(error) }
 })
 
