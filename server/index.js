@@ -347,7 +347,7 @@ function modelCatalog() {
     { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
     { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
   ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
-  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : false) }))
+  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : false) }))
   return { image: images, text: texts, video: videos }
 }
 
@@ -570,8 +570,95 @@ async function generateFalVideo({ file, mode, prompt, ratio, selected }) {
   return videoUrl
 }
 
+async function tokenHubRequest(pathname, options = {}) {
+  if (!process.env.TENCENT_API_KEY) {
+    const error = new Error('服务端尚未配置 TENCENT_API_KEY')
+    error.status = 503
+    throw error
+  }
+  const response = await fetch(`${tencentTokenHubBaseUrl()}${pathname}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${process.env.TENCENT_API_KEY}`, ...(options.headers || {}) },
+    signal: AbortSignal.timeout(180000)
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(payload.error?.message || payload.ErrMsg || payload.message || `腾讯 TokenHub 请求失败（${response.status}）`)
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
+async function generateTencentPixVerseVideo({ file, mode, prompt, ratio, selected }) {
+  const model = selected?.id || 'pixverse-video-c1'
+  const path = mode === 'image' ? '/v1/wand/pixverse/image-to-video' : '/v1/wand/pixverse/text-to-video'
+  const body = {
+    model,
+    prompt: prompt.trim(),
+    duration: 5,
+    quality: mode === 'image' ? '540p' : '720p',
+    ...(mode === 'image' ? { img_id: `data:${file.mimetype};base64,${file.buffer.toString('base64')}` } : { aspect_ratio: ['16:9', '9:16', '1:1', '4:3', '3:4'].includes(ratio) ? ratio : '16:9' })
+  }
+  const submitted = await tokenHubRequest(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  if (Number(submitted.ErrCode || 0) !== 0) throw new Error(submitted.ErrMsg || 'PixVerse 视频任务提交失败')
+  const taskId = submitted.Resp?.video_id || submitted.Resp?.id
+  if (!taskId) throw new Error('PixVerse 未返回视频任务 ID')
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
+    await wait(5000)
+    const task = await tokenHubRequest(`/v1/wand/pixverse/tasks/${encodeURIComponent(taskId)}`)
+    if (Number(task.ErrCode || 0) !== 0) throw new Error(task.ErrMsg || 'PixVerse 视频任务查询失败')
+    const status = Number(task.Resp?.status)
+    if (status === 1) {
+      if (!task.Resp?.url) throw new Error('PixVerse 任务成功但未返回视频文件')
+      return task.Resp.url
+    }
+    if ([6, 7, 8].includes(status)) throw new Error(task.ErrMsg || `PixVerse 视频生成失败（状态 ${status}）`)
+  }
+  const error = new Error('PixVerse 视频生成超时，请稍后重试')
+  error.status = 504
+  throw error
+}
+
+async function generateTencentKlingVideo({ file, mode, prompt, ratio, selected }) {
+  const model = selected?.id || 'kling-video-v3'
+  const path = mode === 'image' ? '/v1/wand/kling/image-to-video' : '/v1/wand/kling/text-to-video'
+  const settings = { resolution: '720p', duration: 5, audio: 'off', multi_shot: mode === 'text' }
+  if (mode === 'text') settings.aspect_ratio = ['16:9', '9:16', '1:1'].includes(ratio) ? ratio : '16:9'
+  const body = mode === 'image'
+    ? { model, contents: [{ type: 'prompt', text: prompt.trim() }, { type: 'first_frame', url: `data:${file.mimetype};base64,${file.buffer.toString('base64')}` }], settings }
+    : { model, prompt: prompt.trim(), settings }
+  const submitted = await tokenHubRequest(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  if (Number(submitted.code || 0) !== 0) throw new Error(submitted.message || 'Kling V3 视频任务提交失败')
+  const taskId = submitted.data?.id
+  if (!taskId) throw new Error('Kling V3 未返回视频任务 ID')
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
+    await wait(5000)
+    const task = await tokenHubRequest(`/v1/wand/kling/tasks/${encodeURIComponent(taskId)}`)
+    if (Number(task.code || 0) !== 0) throw new Error(task.message || 'Kling V3 视频任务查询失败')
+    const status = task.data?.status
+    if (status === 'succeeded') {
+      const videoUrl = task.data?.task_result?.videos?.[0]?.url
+      if (!videoUrl) throw new Error('Kling V3 任务成功但未返回视频文件')
+      return videoUrl
+    }
+    if (status === 'failed') throw new Error(task.message || 'Kling V3 视频生成失败')
+  }
+  const error = new Error('Kling V3 视频生成超时，请稍后重试')
+  error.status = 504
+  throw error
+}
+
+async function generateTencentVideo(options) {
+  return options.selected?.id?.startsWith('kling-') ? generateTencentKlingVideo(options) : generateTencentPixVerseVideo(options)
+}
+
 async function generateVideo(options) {
-  return options.selected?.provider === 'aliyun' ? generateAliyunVideo(options) : generateFalVideo(options)
+  if (options.selected?.provider === 'aliyun') return generateAliyunVideo(options)
+  if (options.selected?.provider === 'tencent') return generateTencentVideo(options)
+  return generateFalVideo(options)
 }
 
 async function videoToGif(videoUrl) {
@@ -693,9 +780,7 @@ app.get('/api/health', (_req, res) => res.json({
   configured: Boolean(process.env.OPENAI_API_KEY),
   tencentConfigured: Boolean(process.env.TENCENT_API_KEY),
   textConfigured: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-  videoConfigured: videoProvider() === 'aliyun'
-    ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
-    : Boolean(process.env.FAL_KEY),
+  videoConfigured: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || process.env.FAL_KEY),
   mock: mockEnabled,
   model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
   videoModel: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'),
@@ -1011,7 +1096,7 @@ app.get('/api/admin/system-health', requireUser, requireAdmin, async (_req, res,
     const configured = {
       supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
       image: Boolean(process.env.OPENAI_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.TENCENT_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-      video: videoProvider() === 'aliyun' ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) : Boolean(process.env.FAL_KEY)
+      video: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || process.env.FAL_KEY)
     }
     for (const [provider, ok] of Object.entries(configured)) if (!ok) alerts.push({ level: 'critical', code: `provider_${provider}`, message: `${provider} 服务尚未完整配置` })
     res.json({ status: alerts.some(item => item.level === 'critical') ? 'critical' : (alerts.length ? 'warning' : 'healthy'), checkedAt: new Date().toISOString(), uptimeSeconds: Math.round(process.uptime()), configured, metrics: { failedHour, pending: pending.length, stale: stale.length, dayUsedFen, monthUsedFen, dayPercent, monthPercent }, alerts })
