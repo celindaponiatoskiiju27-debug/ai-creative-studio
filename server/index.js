@@ -1533,7 +1533,12 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
   let usageId
   try {
     await refreshModelConfigs()
-    let textModel = selectedModel('text', req.body.modelId)
+    const textModel = (modelCatalog().text || []).find(item => item.id === 'qwen-plus' && item.provider === 'aliyun' && item.available)
+    if (!textModel) {
+      const error = new Error('AI 润色所需的通义千问 Plus 当前不可用，请稍后再试')
+      error.status = 503
+      throw error
+    }
     if (!allowPromptEnhance(req.user.id)) return res.status(429).json({ error: 'AI 润色操作过于频繁，请一分钟后再试' })
     const prompt = String(req.body.prompt || '').trim()
     if (!prompt) return res.status(400).json({ error: '请先输入需要润色的画面描述' })
@@ -1554,12 +1559,11 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
     const chargedCredits = (usedToday || 0) < 3 ? 0 : Math.max(0, Number(textModel.creditCost ?? CREDIT_PRICES.enhance))
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'prompt_enhance' }, chargedCredits, 1)
 
-    const textResponse = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
+    const enhancedPrompt = (await generateText(textModel, {
       instructions: '你是一名专业的 AI 视觉提示词编辑。请将用户输入改写成一段更清晰、具体、可直接用于图片或视频生成的中文提示词。保留原始主体、商品信息和用户意图，补充合理的构图、环境、光线、镜头、材质、动作与画面风格；不得虚构具体品牌参数，不要解释，不要列点，不要使用 Markdown，只输出改写后的完整提示词。',
       input: prompt,
       maxOutputTokens: 1000
-    }), retryableProviderError)
-    const enhancedPrompt = textResponse.result.trim(); textModel = textResponse.model
+    })).trim()
     if (!enhancedPrompt) throw new Error(`${textModel.name || textModel.id} 未返回润色内容`)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)

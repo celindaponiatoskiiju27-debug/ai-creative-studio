@@ -1089,7 +1089,7 @@ export default {
         const response = await fetch('/api/prompt/enhance', {
           method: 'POST',
           headers: this.authHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ prompt, modelId: this.textModelId })
+          body: JSON.stringify({ prompt })
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'AI 润色失败');
