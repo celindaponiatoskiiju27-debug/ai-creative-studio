@@ -53,8 +53,7 @@ begin
   select id into v_id
   from public.video_generation_jobs
   where attempts < 3
-    and (status = 'queued'
-      or (status in ('processing','converting') and updated_at < now() - interval '20 minutes'))
+    and status = 'queued'
   order by created_at
   for update skip locked
   limit 1;

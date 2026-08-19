@@ -785,7 +785,7 @@ export default {
     async restoreActiveVideoJob() {
       if (!this.session || this.activeVideoJob) return;
       try {
-        const response = await fetch('/api/video-jobs/active', { headers: this.authHeaders() });
+        const response = await fetch('/api/video-jobs/active', { headers: this.authHeaders(), cache: 'no-store' });
         const data = await response.json();
         if (response.ok && data.job) {
           this.page = 'video'; this.videoMode = data.job.mode; this.resultType = data.job.outputFormat === 'gif' ? 'gif' : 'video';
@@ -800,7 +800,7 @@ export default {
     },
     async pollVideoJob(jobId) {
       try {
-        const response = await fetch(`/api/video-jobs/${encodeURIComponent(jobId)}`, { headers: this.authHeaders() });
+        const response = await fetch(`/api/video-jobs/${encodeURIComponent(jobId)}`, { headers: this.authHeaders(), cache: 'no-store' });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '读取任务状态失败');
         this.activeVideoJob = data.job;

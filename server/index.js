@@ -86,6 +86,7 @@ const promptEnhanceAttempts = new Map()
 const productEventAttempts = new Map()
 const VIDEO_JOB_CONCURRENCY = Math.max(1, Math.min(5, Number(process.env.VIDEO_JOB_CONCURRENCY || 2)))
 const GIF_CONCURRENCY = Math.max(1, Math.min(2, Number(process.env.GIF_CONCURRENCY || 1)))
+const VIDEO_JOB_STALE_MS = Math.max(10, Math.min(30, Number(process.env.VIDEO_JOB_STALE_MINUTES || 12))) * 60000
 let activeVideoJobs = 0
 let activeGifConversions = 0
 let videoPumpRunning = false
@@ -737,6 +738,31 @@ async function syncDramaShotFromJob(job, status, outputUrl = null) {
   }
 }
 
+async function expireStaleVideoJobs(userId = null) {
+  const staleBefore = new Date(Date.now() - VIDEO_JOB_STALE_MS).toISOString()
+  let query = supabaseAdmin().from('video_generation_jobs').select('*').in('status', ['processing', 'converting']).lt('updated_at', staleBefore).limit(20)
+  if (userId) query = query.eq('user_id', userId)
+  const { data: staleJobs, error } = await query
+  if (error) {
+    if (error.code !== '42P01') console.error('[video-job-expire]', error.message)
+    return 0
+  }
+  let expired = 0
+  for (const job of staleJobs || []) {
+    const message = `视频任务超过 ${Math.round(VIDEO_JOB_STALE_MS / 60000)} 分钟未更新，已自动停止并退还算力`
+    const { data: claimed, error: updateError } = await supabaseAdmin().from('video_generation_jobs')
+      .update({ status: 'failed', progress: 100, error_message: message, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', job.id).in('status', ['processing', 'converting']).lt('updated_at', staleBefore).select('*').maybeSingle()
+    if (updateError) { console.error('[video-job-expire-update]', job.id, updateError.message); continue }
+    if (!claimed) continue
+    const timeoutError = new Error(message)
+    await rollbackGeneration(job.usage_id, timeoutError)
+    await syncDramaShotFromJob(job, 'failed')
+    expired += 1
+  }
+  return expired
+}
+
 async function loadVideoJobInput(job) {
   if (job.mode !== 'image') return undefined
   if (!job.input_path) throw new Error('视频任务缺少输入图片')
@@ -763,6 +789,8 @@ async function processVideoJob(job) {
       outputs = [generatedVideo.result]
     }
     const storedOutputs = await archiveOrOriginal(job.user_id, job.usage_id, outputs)
+    const { data: currentJob } = await supabaseAdmin().from('video_generation_jobs').select('status').eq('id', job.id).single()
+    if (currentJob?.status === 'failed') throw new Error('视频任务已超时终止，生成结果不再入账')
     await finishGeneration(job.usage_id, true)
     await updateVideoJob(job.id, { status: 'completed', progress: 100, output_urls: storedOutputs, finished_at: new Date().toISOString() })
     await syncDramaShotFromJob(job, 'completed', storedOutputs[0] || null)
@@ -849,10 +877,10 @@ async function archiveOrOriginal(userId, usageId, urls) {
 
 async function finishGeneration(usageId, success) {
   if (!usageId) return
-  const { data: usageBefore } = !success ? await supabaseAdmin().from('usage_records').select('user_id,credits').eq('id', usageId).single() : { data: null }
+  const { data: usageBefore } = !success ? await supabaseAdmin().from('usage_records').select('user_id,credits,status').eq('id', usageId).single() : { data: null }
   const { error } = await supabaseAdmin().rpc('finish_generation', { p_usage_id: usageId, p_success: success })
   if (error) throw error
-  if (!success && usageBefore?.credits > 0) {
+  if (!success && usageBefore?.status === 'pending' && usageBefore?.credits > 0) {
     const profile = await profileFor(usageBefore.user_id)
     const { error: ledgerError } = await supabaseAdmin().from('credit_transactions').insert({ user_id: usageBefore.user_id, type: 'refund', amount: usageBefore.credits, balance_after: profile.credits, reference_type: 'usage_record', reference_id: usageId, description: '生成失败自动返还' })
     if (ledgerError && ledgerError.code !== '42P01') console.error('[credit-ledger-refund]', ledgerError.message)
@@ -2105,6 +2133,8 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
 
 app.get('/api/video-jobs/active', requireUser, async (req, res, next) => {
   try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+    await expireStaleVideoJobs(req.user.id)
     const { data, error } = await supabaseAdmin().from('video_generation_jobs').select('*').eq('user_id', req.user.id).in('status', ['queued','processing','converting']).order('created_at').limit(1)
     if (error) throw error
     res.json({ job: data?.[0] ? publicVideoJob(data[0]) : null })
@@ -2113,6 +2143,8 @@ app.get('/api/video-jobs/active', requireUser, async (req, res, next) => {
 
 app.get('/api/video-jobs/:id', requireUser, async (req, res, next) => {
   try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+    await expireStaleVideoJobs(req.user.id)
     const { data: job, error } = await supabaseAdmin().from('video_generation_jobs').select('*').eq('id', req.params.id).eq('user_id', req.user.id).single()
     if (error) { error.status = error.code === 'PGRST116' ? 404 : undefined; throw error }
     let queuePosition = 0
@@ -2152,4 +2184,5 @@ app.listen(port, () => {
   console.log(`AI API server running at http://localhost:${port}`)
   setTimeout(pumpVideoJobs, 1000)
   setInterval(pumpVideoJobs, 5000).unref()
+  setInterval(() => expireStaleVideoJobs().catch(error => console.error('[video-job-expire-timer]', error.message)), 60000).unref()
 })
