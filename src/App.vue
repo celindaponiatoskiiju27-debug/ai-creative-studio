@@ -749,7 +749,9 @@ export default {
         const images = (data.models?.image || []).map(item => ({ ...item, desc: item.description || '' }));
         if (images.length) { this.models = images; this.model = images.find(item => item.available && item.supportsGenerate !== false) || images[0]; }
         this.textModels = data.models?.text || this.textModels; this.textModelId = this.textModels.find(item => item.available)?.id || this.textModels[0]?.id || '';
-        this.videoModels = data.models?.video || []; this.videoModelId = this.videoModels.find(item => item.available)?.id || this.videoModels[0]?.id || '';
+        this.videoModels = data.models?.video || [];
+        const defaultWanVideo = this.videoModels.find(item => item.available && item.provider === 'aliyun' && item.textModel === 'wan2.6-t2v');
+        this.videoModelId = defaultWanVideo?.id || this.videoModels.find(item => item.available)?.id || this.videoModels[0]?.id || '';
       } catch (error) { console.warn('[models]', error.message); }
     },
     async loadSiteAnnouncement() { try { const response = await fetch('/api/site-announcement'); const data = await response.json(); const item = data.announcement; if (item && localStorage.getItem('lingjing-dismissed-announcement') !== item.updated_at) this.$set(this.$data, 'siteAnnouncement', item) } catch (_error) {} },

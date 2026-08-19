@@ -35,7 +35,11 @@ export default {
   props: { session: Object, textModels: { type: Array, default: () => [] }, videoModels: { type: Array, default: () => [] } },
   data: () => ({ form: { premise: '', genre: '电商剧情', duration: 30, characters: '' }, textModelId: '', projects: [], project: null, planning: false, busyShotId: '', error: '', pollTimer: null, voiceOptions: [], emotions: [{ id:'natural',name:'自然' },{ id:'happy',name:'开心' },{ id:'sad',name:'悲伤' },{ id:'tense',name:'紧张' },{ id:'excited',name:'激动' }] }),
   computed: {
-    availableVideoModel() { return this.videoModels.find(item => item.available && item.textModel) || this.videoModels.find(item => item.available); },
+    availableVideoModel() {
+      return this.videoModels.find(item => item.available && item.provider === 'aliyun' && item.textModel === 'wan2.6-t2v')
+        || this.videoModels.find(item => item.available && item.textModel)
+        || this.videoModels.find(item => item.available);
+    },
     videoCost() { return Math.max(0, Number(this.availableVideoModel?.textCreditCost ?? 25)); },
     completedCount() { return this.project?.shots?.filter(item => item.status === 'completed').length || 0; },
     characterNames() { return Array.isArray(this.project?.characters) ? this.project.characters.map(item => item.name).filter(Boolean) : []; },

@@ -541,7 +541,8 @@ async function withImageFallback(requestedId, capability, runner) {
 async function generateAliyunVideo({ file, mode, prompt, selected }) {
   const baseUrl = dashScopeBaseUrl()
   const imageModel = selected?.id || process.env.VIDEO_MODEL || 'wan2.6-i2v-flash'
-  const textModel = selected?.textModel || process.env.VIDEO_TEXT_MODEL || 'wan2.6-t2v'
+  // 文生视频允许由 Render 环境变量统一指定默认模型；图片动起来仍使用所选图生视频模型。
+  const textModel = process.env.VIDEO_TEXT_MODEL || selected?.textModel || 'wan2.6-t2v'
   const model = mode === 'image'
     ? (imageModel.startsWith('fal-ai/') ? 'wan2.6-i2v-flash' : imageModel)
     : (textModel.startsWith('fal-ai/') ? 'wan2.6-t2v' : textModel)
