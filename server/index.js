@@ -333,6 +333,7 @@ function validateModelConfig(body) {
 function modelCatalog() {
   const openAIImageReady = Boolean(process.env.OPENAI_API_KEY) || mockEnabled
   const aliyunImageReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
+  const tencentImageReady = Boolean(process.env.TENCENT_API_KEY)
   const openAITextReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
   const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
@@ -341,7 +342,7 @@ function modelCatalog() {
   const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [
     { id: 'qwen-image-2.0', name: '千问图像 2.0', provider: 'aliyun', description: '国内默认 · 高性价比文生图与编辑', creditCost: 2, supportsGenerate: true, supportsEdit: true, enabled: true },
     { id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '海外高质量备用图片模型', creditCost: 5, supportsGenerate: true, supportsEdit: true, enabled: true }
-  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : false) && !modelIsCoolingDown('image', item) }))
+  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : item.provider === 'tencent' ? tencentImageReady : false) && !modelIsCoolingDown('image', item) }))
   const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
     { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
     { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
@@ -438,6 +439,56 @@ async function generateAliyunImage({ model, prompt, ratio, count, files = [] }) 
     })
   })
   return extractDashScopeImages(payload)
+}
+
+const tencentImageSizes = { '1:1': '1024x1024', '4:3': '1152x864', '16:9': '1344x768', '3:4': '864x1152', '9:16': '768x1344' }
+
+function tencentTokenHubBaseUrl() {
+  return (process.env.TENCENT_TOKENHUB_BASE_URL || 'https://tokenhub.tencentmaas.com').trim().replace(/\/$/, '')
+}
+
+async function generateTencentImage({ model, prompt, ratio, count, files = [] }) {
+  if (!process.env.TENCENT_API_KEY) {
+    const error = new Error('服务端尚未配置 TENCENT_API_KEY')
+    error.status = 503
+    throw error
+  }
+  if (files.length > 3) {
+    const error = new Error('腾讯混元最多支持 3 张参考图片，请减少一张后重试')
+    error.status = 400
+    throw error
+  }
+  if (files.some(file => !['image/png', 'image/jpeg'].includes(file.mimetype))) {
+    const error = new Error('腾讯混元参考图仅支持 PNG 或 JPG 格式')
+    error.status = 400
+    throw error
+  }
+  const referenceImages = files.slice(0, 3).map(file => `data:${file.mimetype};base64,${file.buffer.toString('base64')}`)
+  const modelId = ['hunyuan-image', 'hunyuan-image-edit', 'hy-image-v3.0'].includes(model.id) ? 'hy-image-v3' : model.id
+  const generateOne = async () => {
+    const response = await fetch(`${tencentTokenHubBaseUrl()}/v1/wand/hunyuan-image/v3-generation`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.TENCENT_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: modelId,
+        prompt: prompt.trim(),
+        size: tencentImageSizes[ratio] || tencentImageSizes['1:1'],
+        revise: true,
+        ...(referenceImages.length ? { images: referenceImages } : {})
+      }),
+      signal: AbortSignal.timeout(180000)
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const error = new Error(payload.error?.message || payload.message || payload.code || `腾讯混元接口请求失败（${response.status}）`)
+      error.status = response.status
+      throw error
+    }
+    const url = payload.data?.[0]?.url || payload.output?.images?.[0]?.url || payload.output?.[0]?.url
+    if (!url) throw new Error('腾讯混元未返回图片文件')
+    return url
+  }
+  return Promise.all(Array.from({ length: Math.min(4, Math.max(1, Number(count) || 1)) }, generateOne))
 }
 
 async function withImageFallback(requestedId, capability, runner) {
@@ -640,6 +691,7 @@ function mockImages(body) {
 app.get('/api/health', (_req, res) => res.json({
   ok: true,
   configured: Boolean(process.env.OPENAI_API_KEY),
+  tencentConfigured: Boolean(process.env.TENCENT_API_KEY),
   textConfigured: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
   videoConfigured: videoProvider() === 'aliyun'
     ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
@@ -958,7 +1010,7 @@ app.get('/api/admin/system-health', requireUser, requireAdmin, async (_req, res,
     if (stale.length) alerts.push({ level: 'critical', code: 'stale', message: `${stale.length} 个任务已超过 20 分钟，可能需要退款清理` })
     const configured = {
       supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
-      image: Boolean(process.env.OPENAI_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
+      image: Boolean(process.env.OPENAI_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.TENCENT_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
       video: videoProvider() === 'aliyun' ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) : Boolean(process.env.FAL_KEY)
     }
     for (const [provider, ok] of Object.entries(configured)) if (!ok) alerts.push({ level: 'critical', code: `provider_${provider}`, message: `${provider} 服务尚未完整配置` })
@@ -1656,6 +1708,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     else {
       const generatedImage = await withImageFallback(req.body.modelId, 'generate', async model => {
         if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
+        if (model.provider === 'tencent') return generateTencentImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
         return images(await client().images.generate(options({ ...req.body, selectedModel: model })))
       })
       generated = generatedImage.result; usedModel = generatedImage.model
@@ -1688,6 +1741,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     else {
       const editedImage = await withImageFallback(req.body.modelId, 'edit', async model => {
         if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
+        if (model.provider === 'tencent') return generateTencentImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
         const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
         return images(await client().images.edit({ ...options({ ...req.body, selectedModel: model }), image }))
       })
