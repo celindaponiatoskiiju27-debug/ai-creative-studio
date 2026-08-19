@@ -310,7 +310,7 @@ async function refreshModelConfigs(force = false) {
   try {
     const { data, error } = await supabaseAdmin().from('model_configs').select('*').order('sort_order').order('created_at')
     if (error) throw error
-    databaseModels = (data || []).map(item => ({ id: item.model_id, databaseId: item.id, type: item.type, provider: item.provider, name: item.name, description: item.description, textModel: item.text_model_id, enabled: item.enabled, sortOrder: item.sort_order, creditCost: Math.max(0, Number(item.credit_cost ?? 1)) }))
+    databaseModels = (data || []).map(item => ({ id: item.model_id, databaseId: item.id, type: item.type, provider: item.provider, name: item.name, description: item.description, textModel: item.text_model_id, enabled: item.enabled, sortOrder: item.sort_order, creditCost: Math.max(0, Number(item.credit_cost ?? 1)), textCreditCost: Math.max(0, Number(item.text_credit_cost ?? item.credit_cost ?? 1)), supportsGenerate: item.supports_generate !== false, supportsEdit: item.supports_edit === true }))
     databaseModelsLoadedAt = Date.now()
   } catch (error) {
     if (error.code !== '42P01') console.error('[model-configs]', error.message)
@@ -323,26 +323,30 @@ function validateModelConfig(body) {
   const modelId = String(body.model_id || body.id || '').trim()
   const name = String(body.name || '').trim()
   if (!['image', 'text', 'video'].includes(type)) { const error = new Error('请选择正确的功能类型'); error.status = 400; throw error }
-  if (!['openai', 'aliyun', 'fal'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
+  if (!['openai', 'aliyun', 'fal', 'tencent'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
   if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
-  if (type === 'image' && provider !== 'openai') { const error = new Error('当前图片模型仅支持 OpenAI 兼容接口'); error.status = 400; throw error }
+  if (type === 'image' && !['openai', 'aliyun', 'tencent'].includes(provider)) { const error = new Error('图片模型供应商配置不正确'); error.status = 400; throw error }
   if (type === 'text' && !['openai', 'aliyun'].includes(provider)) { const error = new Error('文案模型仅支持 OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
-  return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)), credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.credit_cost ?? body.creditCost ?? 1) || 0))) }
+  return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)), credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.credit_cost ?? body.creditCost ?? 1) || 0))), text_credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.text_credit_cost ?? body.textCreditCost ?? body.credit_cost ?? body.creditCost ?? 1) || 0))), supports_generate: body.supports_generate ?? body.supportsGenerate ?? true, supports_edit: body.supports_edit ?? body.supportsEdit ?? false }
 }
 
 function modelCatalog() {
-  const imageReady = Boolean(process.env.OPENAI_API_KEY) || mockEnabled
+  const openAIImageReady = Boolean(process.env.OPENAI_API_KEY) || mockEnabled
+  const aliyunImageReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
   const openAITextReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
   const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
   const falReady = Boolean(process.env.FAL_KEY)
   const source = type => databaseModels.filter(item => item.type === type)
-  const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [{ id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '高质量商品图片生成', enabled: true }])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && imageReady && !modelIsCoolingDown('image', item) }))
+  const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [
+    { id: 'qwen-image-2.0', name: '千问图像 2.0', provider: 'aliyun', description: '国内默认 · 高性价比文生图与编辑', creditCost: 2, supportsGenerate: true, supportsEdit: true, enabled: true },
+    { id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '海外高质量备用图片模型', creditCost: 5, supportsGenerate: true, supportsEdit: true, enabled: true }
+  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : false) && !modelIsCoolingDown('image', item) }))
   const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
     { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
     { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
   ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
-  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : false) }))
+  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : false) }))
   return { image: images, text: texts, video: videos }
 }
 
@@ -406,6 +410,61 @@ async function dashScopeRequest(url, options = {}) {
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
+const qwenImageSizes = { '1:1': '2048*2048', '4:3': '2368*1728', '16:9': '2688*1536', '3:4': '1728*2368', '9:16': '1536*2688' }
+const qwenEditSizes = { '1:1': '1024*1024', '4:3': '1344*1008', '16:9': '1536*864', '3:4': '1008*1344', '9:16': '864*1536' }
+
+function extractDashScopeImages(payload) {
+  const content = payload.output?.choices?.flatMap(choice => choice.message?.content || []) || []
+  const urls = content.map(item => item.image || item.image_url || item.url).filter(Boolean)
+  if (!urls.length) throw new Error('百炼图片模型未返回图片文件')
+  return urls
+}
+
+async function generateAliyunImage({ model, prompt, ratio, count, files = [] }) {
+  const content = files.map(file => ({ image: `data:${file.mimetype};base64,${file.buffer.toString('base64')}` }))
+  content.push({ text: prompt.trim() })
+  const payload = await dashScopeRequest(`${dashScopeBaseUrl()}/services/aigc/multimodal-generation/generation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: model.id,
+      input: { messages: [{ role: 'user', content }] },
+      parameters: {
+        n: Math.min(4, Math.max(1, Number(count) || 1)),
+        size: (model.id.includes('image-edit') ? qwenEditSizes : qwenImageSizes)[ratio] || qwenEditSizes['1:1'],
+        prompt_extend: true,
+        watermark: false
+      }
+    })
+  })
+  return extractDashScopeImages(payload)
+}
+
+async function withImageFallback(requestedId, capability, runner) {
+  const supports = item => capability === 'edit' ? item.supportsEdit : item.supportsGenerate !== false
+  const available = (modelCatalog().image || []).filter(item => item.available && supports(item))
+  const candidates = [...available.filter(item => item.id === requestedId), ...available.filter(item => item.id !== requestedId)]
+  if (!candidates.length) {
+    const error = new Error(`当前没有可用的${capability === 'edit' ? '图片编辑' : '图片生成'}模型`)
+    error.status = 503
+    throw error
+  }
+  let lastError
+  for (const model of candidates) {
+    try {
+      const result = await runner(model)
+      clearModelFailure('image', model)
+      return { result, model }
+    } catch (error) {
+      lastError = error
+      if (!retryableProviderError(error) && Number(error?.status || error?.statusCode || 0) !== 403) throw error
+      markModelFailure('image', model)
+      console.error('[image-model-fallback]', capability, model.provider, model.id, error.message)
+    }
+  }
+  throw lastError
+}
+
 async function generateAliyunVideo({ file, mode, prompt, selected }) {
   const baseUrl = dashScopeBaseUrl()
   const imageModel = selected?.id || process.env.VIDEO_MODEL || 'wan2.6-i2v-flash'
@@ -450,7 +509,7 @@ async function generateAliyunVideo({ file, mode, prompt, selected }) {
 async function generateFalVideo({ file, mode, prompt, ratio, selected }) {
   configureFal()
   const imageModel = selected?.id || process.env.VIDEO_MODEL || 'fal-ai/ltx-video/image-to-video'
-  const model = mode === 'image' ? imageModel : falTextModel(imageModel)
+  const model = mode === 'image' ? imageModel : (selected?.textModel || falTextModel(imageModel))
   const input = { prompt: prompt.trim() }
   if (mode === 'image') input.image_url = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
   if (mode === 'text') input.aspect_ratio = ['16:9', '9:16', '1:1'].includes(ratio) ? ratio : '16:9'
@@ -1587,18 +1646,24 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     await enforceContentSafety(req, req.body.prompt, 'image_generation')
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
-    usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_generation' }, CREDIT_PRICES.image * count, count)
-    let usedModel = selectedModel('image', req.body.modelId)
+    const generationModels = (modelCatalog().image || []).filter(item => item.available && item.supportsGenerate !== false)
+    let usedModel = generationModels.find(item => item.id === req.body.modelId) || generationModels[0]
+    if (!usedModel) { const error = new Error('当前没有可用的图片生成模型'); error.status = 503; throw error }
+    const chargedCredits = Math.max(0, Number(usedModel.creditCost ?? CREDIT_PRICES.image)) * count
+    usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_generation' }, chargedCredits, count)
     let generated
     if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
     else {
-      const generatedImage = await withModelFallback('image', req.body.modelId, model => client().images.generate(options({ ...req.body, selectedModel: model })))
-      generated = images(generatedImage.result); usedModel = generatedImage.model
+      const generatedImage = await withImageFallback(req.body.modelId, 'generate', async model => {
+        if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
+        return images(await client().images.generate(options({ ...req.body, selectedModel: model })))
+      })
+      generated = generatedImage.result; usedModel = generatedImage.model
     }
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, usageId, model: usedModel.id, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ images: storedImages, usageId, model: usedModel.id, modelName: usedModel.name || usedModel.id, chargedCredits, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1613,18 +1678,25 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面描述' })
     await enforceContentSafety(req, req.body.prompt, 'image_edit')
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
-    usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_edit' }, CREDIT_PRICES.imageEdit * count, count)
+    const editModels = (modelCatalog().image || []).filter(item => item.available && item.supportsEdit)
+    let usedModel = editModels.find(item => item.id === req.body.modelId) || editModels[0]
+    if (!usedModel) { const error = new Error('当前没有可用的图片编辑模型'); error.status = 503; throw error }
+    const chargedCredits = Math.max(0, Number(usedModel.creditCost ?? CREDIT_PRICES.imageEdit)) * count
+    usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_edit' }, chargedCredits, count)
     let generated
     if (mockEnabled) generated = await new Promise(resolve => setTimeout(() => resolve(mockImages(req.body)), 900))
     else {
-      const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
-      const editedImage = await withModelFallback('image', req.body.modelId, model => client().images.edit({ ...options({ ...req.body, selectedModel: model }), image }))
-      generated = images(editedImage.result)
+      const editedImage = await withImageFallback(req.body.modelId, 'edit', async model => {
+        if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
+        const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
+        return images(await client().images.edit({ ...options({ ...req.body, selectedModel: model }), image }))
+      })
+      generated = editedImage.result; usedModel = editedImage.model
     }
     const storedImages = await archiveOrOriginal(req.user.id, usageId, generated)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ images: storedImages, usageId, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ images: storedImages, usageId, model: usedModel.id, modelName: usedModel.name || usedModel.id, chargedCredits, mock: mockEnabled, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1639,7 +1711,8 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
     if (mode === 'image' && !req.file) return res.status(400).json({ error: '请上传一张静态图片' })
     if (!req.body.prompt?.trim()) return res.status(400).json({ error: '请输入画面运动描述' })
     await enforceContentSafety(req, req.body.prompt, mode === 'image' ? 'gif_generation' : 'video_generation')
-    const credits = mode === 'image' ? CREDIT_PRICES.gif : CREDIT_PRICES.video
+    const selectedVideoModel = selectedModel('video', req.body.modelId)
+    const credits = Math.max(0, Number(mode === 'image' ? (selectedVideoModel.creditCost ?? CREDIT_PRICES.gif) : (selectedVideoModel.textCreditCost ?? CREDIT_PRICES.video)))
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: mode === 'image' ? 'gif_generation' : 'video_generation' }, credits, 1)
     const generatedVideo = await withModelFallback('video', req.body.modelId, selected => generateVideo({ file: req.file, mode, prompt: req.body.prompt, ratio: req.body.ratio, selected }))
     const videoUrl = generatedVideo.result

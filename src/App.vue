@@ -162,7 +162,7 @@
             >
           </div>
           <div v-if="page === 'image'" class="field">
-            <label>选择模型</label
+            <label>{{ referenceImages.length ? '图片修改 / 合成模型' : '文生图模型' }}</label
             ><button class="select-card" @click="modelOpen = !modelOpen">
               <span class="model-icon">✦</span
               ><span
@@ -171,7 +171,7 @@
               ><i>⌄</i>
             </button>
             <div v-if="modelOpen" class="model-menu">
-              <button v-for="m in models" :key="m.id || m.name" :disabled="!m.available" :class="{ unavailable: !m.available }" @click="selectModel(m)">
+              <button v-for="m in imageModelsForMode" :key="`${m.provider}-${m.id}`" :disabled="!m.available" :class="{ unavailable: !m.available }" @click="selectModel(m)">
                 <b>{{ m.name }}</b
                 ><small>{{ m.desc }}{{ m.available ? '' : ' · 暂不可用' }}</small>
               </button>
@@ -641,6 +641,9 @@ export default {
     selectedVideoModelDescription() {
       return this.videoModels.find(item => item.id === this.videoModelId)?.description || '';
     },
+    imageModelsForMode() {
+      return this.models.filter(item => this.referenceImages.length ? item.supportsEdit : item.supportsGenerate !== false);
+    },
     meta() {
       return this.state === "empty"
         ? "等待你的灵感"
@@ -673,11 +676,12 @@ export default {
       };
     },
     videoCredits() {
-      return this.videoMode === 'image' ? 6 : 25;
+      const selected = this.videoModels.find(item => item.id === this.videoModelId);
+      return Math.max(0, Number(this.videoMode === 'image' ? (selected?.creditCost ?? 6) : (selected?.textCreditCost ?? 25)));
     },
     requiredCredits() {
       if (this.page === 'video') return this.videoCredits;
-      return (this.referenceImages.length ? 3 : 2) * this.count;
+      return Math.max(0, Number(this.model?.creditCost ?? (this.referenceImages.length ? 3 : 2))) * this.count;
     },
     displayedHistoryRecords() {
       const records = this.historyRecords.filter(record => record.action !== 'prompt_enhance');
@@ -726,7 +730,7 @@ export default {
         const response = await fetch('/api/models'); const data = await response.json();
         if (!response.ok) throw new Error(data.error || '读取模型列表失败');
         const images = (data.models?.image || []).map(item => ({ ...item, desc: item.description || '' }));
-        if (images.length) { this.models = images; this.model = images.find(item => item.available) || images[0]; }
+        if (images.length) { this.models = images; this.model = images.find(item => item.available && item.supportsGenerate !== false) || images[0]; }
         this.textModels = data.models?.text || this.textModels; this.textModelId = this.textModels.find(item => item.available)?.id || this.textModels[0]?.id || '';
         this.videoModels = data.models?.video || []; this.videoModelId = this.videoModels.find(item => item.available)?.id || this.videoModels[0]?.id || '';
       } catch (error) { console.warn('[models]', error.message); }
@@ -1117,16 +1121,24 @@ export default {
       if (files.some(file => file.size > 10 * 1024 * 1024)) { this.errorMessage = "每张参考图片不能超过 10MB"; return; }
       const available = 4 - this.referenceImages.length;
       this.referenceImages.push(...files.slice(0, available).map(file => ({ file, url: URL.createObjectURL(file) })));
+      this.chooseDefaultImageModel(true);
       this.errorMessage = files.length > available ? "最多只能选择4张参考图片" : "";
     },
     removeReferenceImage(index) {
       const [removed] = this.referenceImages.splice(index, 1);
       if (removed) URL.revokeObjectURL(removed.url);
+      if (!this.referenceImages.length) this.chooseDefaultImageModel(false);
     },
     clearReferenceImages() {
       this.referenceImages.forEach(item => URL.revokeObjectURL(item.url));
       this.referenceImages = [];
+      this.chooseDefaultImageModel(false);
       this.errorMessage = "";
+    },
+    chooseDefaultImageModel(editMode) {
+      const candidates = this.models.filter(item => editMode ? item.supportsEdit : item.supportsGenerate !== false);
+      this.model = candidates.find(item => item.available) || candidates[0] || this.model;
+      this.modelOpen = false;
     },
     async loadCommunity() {
       this.communityLoading = true; this.communityError = '';
