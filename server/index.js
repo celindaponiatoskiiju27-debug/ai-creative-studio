@@ -310,7 +310,7 @@ async function refreshModelConfigs(force = false) {
   try {
     const { data, error } = await supabaseAdmin().from('model_configs').select('*').order('sort_order').order('created_at')
     if (error) throw error
-    databaseModels = (data || []).map(item => ({ id: item.model_id, databaseId: item.id, type: item.type, provider: item.provider, name: item.name, description: item.description, textModel: item.text_model_id, enabled: item.enabled, sortOrder: item.sort_order }))
+    databaseModels = (data || []).map(item => ({ id: item.model_id, databaseId: item.id, type: item.type, provider: item.provider, name: item.name, description: item.description, textModel: item.text_model_id, enabled: item.enabled, sortOrder: item.sort_order, creditCost: Math.max(0, Number(item.credit_cost ?? 1)) }))
     databaseModelsLoadedAt = Date.now()
   } catch (error) {
     if (error.code !== '42P01') console.error('[model-configs]', error.message)
@@ -327,7 +327,7 @@ function validateModelConfig(body) {
   if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
   if (type === 'image' && provider !== 'openai') { const error = new Error('当前图片模型仅支持 OpenAI 兼容接口'); error.status = 400; throw error }
   if (type === 'text' && !['openai', 'aliyun'].includes(provider)) { const error = new Error('文案模型仅支持 OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
-  return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)) }
+  return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)), credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.credit_cost ?? body.creditCost ?? 1) || 0))) }
 }
 
 function modelCatalog() {
@@ -339,8 +339,8 @@ function modelCatalog() {
   const source = type => databaseModels.filter(item => item.type === type)
   const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [{ id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '高质量商品图片生成', enabled: true }])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && imageReady && !modelIsCoolingDown('image', item) }))
   const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
-    { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', enabled: true },
-    { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', enabled: true }
+    { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
+    { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
   ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
   const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : false) }))
   return { image: images, text: texts, video: videos }
@@ -1507,7 +1507,8 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (!features) return res.status(400).json({ error: '请填写商品核心卖点' })
     const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
     await enforceContentSafety(req, prompt, 'copy_generation')
-    usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'copy_generation' }, CREDIT_PRICES.copy, 1)
+    const selectedCreditCost = Math.max(0, Number(textModel.creditCost ?? CREDIT_PRICES.copy))
+    usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'copy_generation' }, selectedCreditCost, 1)
     const textResponse = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
       instructions: '你是一名资深中国电商文案策划。根据商品资料和平台特点，输出：1. 三个商品标题；2. 五条核心卖点；3. 一段可直接发布的营销正文；4. 三条短促销口号。语言自然、有转化力，不夸大功效，不虚构未提供的参数，不使用Markdown代码块。',
       input: prompt,
@@ -1521,7 +1522,7 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     if (saveCopyError) console.error('[archive-copy]', usageId, saveCopyError.message)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ copy, usageId, model: textModel.id, modelName: textModel.name || textModel.id, provider: textModel.provider, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ copy, usageId, model: textModel.id, modelName: textModel.name || textModel.id, provider: textModel.provider, chargedCredits: selectedCreditCost, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1550,7 +1551,7 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
       .gte('created_at', dayStart)
       .in('status', ['pending', 'completed'])
     if (countError) throw countError
-    const chargedCredits = (usedToday || 0) < 3 ? 0 : CREDIT_PRICES.enhance
+    const chargedCredits = (usedToday || 0) < 3 ? 0 : Math.max(0, Number(textModel.creditCost ?? CREDIT_PRICES.enhance))
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'prompt_enhance' }, chargedCredits, 1)
 
     const textResponse = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {

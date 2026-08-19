@@ -89,7 +89,7 @@
           </div>
           <button class="generate-btn" :class="{ loading: copyLoading }" :disabled="copyLoading" :aria-busy="copyLoading ? 'true' : 'false'" @click="generateCopy">
             <span v-if="copyLoading" class="button-spinner" aria-hidden="true"></span><span v-else>✦</span>
-            <b>{{ copyLoading ? '文案生成中，请稍候…' : '生成电商文案' }}</b><small v-if="!copyLoading">消耗 1 算力</small>
+            <b>{{ copyLoading ? '文案生成中，请稍候…' : '生成电商文案' }}</b><small v-if="!copyLoading">消耗 {{ selectedTextModelCredit }} 算力</small>
           </button>
           <p class="usage-warning">仅限合法电商营销使用。严禁用于虚假宣传、诈骗引流、仿冒品牌、侵害版权或肖像权等违规行为。</p>
           <p v-if="copyError" class="api-error">{{ copyError }}</p>
@@ -627,6 +627,9 @@ export default {
     selectedTextModelName() {
       return this.textModels.find(item => item.id === this.textModelId)?.name || 'AI';
     },
+    selectedTextModelCredit() {
+      return Math.max(0, Number(this.textModels.find(item => item.id === this.textModelId)?.creditCost ?? 1));
+    },
     selectedTextModelDescription() {
       return this.textModels.find(item => item.id === this.textModelId)?.description || '';
     },
@@ -874,7 +877,7 @@ export default {
     async generateCopy() {
       if (this.copyLoading) return;
       if (!this.session) { this.copyError = "请先登录后再生成"; this.requestLogin(this.copyError); return; }
-      if (this.credits < 1) { this.copyError = "算力不足，请充值后再试"; await this.openRecharge(); return; }
+      if (this.credits < this.selectedTextModelCredit) { this.copyError = `算力不足，本次需要 ${this.selectedTextModelCredit} 算力`; await this.openRecharge(); return; }
       if (!this.copyProduct.trim()) { this.copyError = "请填写商品名称"; return; }
       if (!this.copyFeatures.trim()) { this.copyError = "请填写商品核心卖点"; return; }
       this.copyLoading = true; this.copyError = ""; this.copyCopied = false; this.copyModelName = "";
