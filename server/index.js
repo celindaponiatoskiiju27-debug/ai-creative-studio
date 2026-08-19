@@ -212,7 +212,7 @@ function falTextModel(imageModel) {
   return imageModel.replace('/image-to-video', '/text-to-video')
 }
 
-function textClient() {
+function openAITextClient() {
   if (!process.env.OPENAI_TEXT_API_KEY) {
     const error = new Error('服务端尚未配置 OPENAI_TEXT_API_KEY')
     error.status = 503
@@ -223,6 +223,44 @@ function textClient() {
     apiKey: process.env.OPENAI_TEXT_API_KEY,
     ...(baseURL ? { baseURL: baseURL.replace(/\/$/, '') } : {})
   })
+}
+
+function qwenTextClient() {
+  if (!process.env.DASHSCOPE_API_KEY) {
+    const error = new Error('服务端尚未配置 DASHSCOPE_API_KEY')
+    error.status = 503
+    throw error
+  }
+  const baseURL = (process.env.DASHSCOPE_COMPATIBLE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').trim()
+  return new OpenAI({ apiKey: process.env.DASHSCOPE_API_KEY, baseURL: baseURL.replace(/\/$/, '') })
+}
+
+function retryableProviderError(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0)
+  const code = String(error?.code || '').toLowerCase()
+  if ([408, 409, 429].includes(status) || status >= 500) return true
+  if (['etimedout', 'econnreset', 'econnrefused', 'enotfound'].includes(code)) return true
+  return /timeout|timed out|network|socket|temporar|rate.?limit|服务繁忙|系统错误/i.test(String(error?.message || ''))
+}
+
+async function generateText(candidate, { instructions, input, maxOutputTokens }) {
+  if (candidate.provider === 'aliyun') {
+    const response = await qwenTextClient().chat.completions.create({
+      model: candidate.id,
+      messages: [{ role: 'system', content: instructions }, { role: 'user', content: input }],
+      max_tokens: maxOutputTokens,
+      temperature: 0.7
+    })
+    return responseText(response)
+  }
+  const response = await openAITextClient().responses.create({
+    model: candidate.id,
+    reasoning: { effort: 'low' },
+    max_output_tokens: maxOutputTokens,
+    instructions,
+    input: [{ role: 'user', content: [{ type: 'input_text', text: input }] }]
+  })
+  return responseText(response)
 }
 
 function responseText(response) {
@@ -287,18 +325,23 @@ function validateModelConfig(body) {
   if (!['image', 'text', 'video'].includes(type)) { const error = new Error('请选择正确的功能类型'); error.status = 400; throw error }
   if (!['openai', 'aliyun', 'fal'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
   if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
-  if (type !== 'video' && provider !== 'openai') { const error = new Error('当前图片和文案模型仅支持 OpenAI 兼容接口'); error.status = 400; throw error }
+  if (type === 'image' && provider !== 'openai') { const error = new Error('当前图片模型仅支持 OpenAI 兼容接口'); error.status = 400; throw error }
+  if (type === 'text' && !['openai', 'aliyun'].includes(provider)) { const error = new Error('文案模型仅支持 OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
   return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)) }
 }
 
 function modelCatalog() {
   const imageReady = Boolean(process.env.OPENAI_API_KEY) || mockEnabled
-  const textReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
+  const openAITextReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
+  const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
   const falReady = Boolean(process.env.FAL_KEY)
   const source = type => databaseModels.filter(item => item.type === type)
   const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [{ id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '高质量商品图片生成', enabled: true }])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && imageReady && !modelIsCoolingDown('image', item) }))
-  const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [{ id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '电商文案与提示词润色', enabled: true }])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && textReady && !modelIsCoolingDown('text', item) }))
+  const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
+    { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', enabled: true },
+    { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', enabled: true }
+  ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
   const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : false) }))
   return { image: images, text: texts, video: videos }
 }
@@ -320,7 +363,7 @@ function modelCandidates(type, requestedId) {
   ]
 }
 
-async function withModelFallback(type, requestedId, runner) {
+async function withModelFallback(type, requestedId, runner, shouldFallback = () => true) {
   const candidates = modelCandidates(type, requestedId)
   let lastError
   for (const model of candidates) {
@@ -328,6 +371,7 @@ async function withModelFallback(type, requestedId, runner) {
       const result = await runner(model); clearModelFailure(type, model); return { result, model }
     } catch (error) {
       lastError = error
+      if (!shouldFallback(error, model)) throw error
       markModelFailure(type, model)
       console.error('[model-fallback]', type, model.provider, model.id, error.message)
     }
@@ -537,7 +581,7 @@ function mockImages(body) {
 app.get('/api/health', (_req, res) => res.json({
   ok: true,
   configured: Boolean(process.env.OPENAI_API_KEY),
-  textConfigured: Boolean(process.env.OPENAI_TEXT_API_KEY),
+  textConfigured: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
   videoConfigured: videoProvider() === 'aliyun'
     ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
     : Boolean(process.env.FAL_KEY),
@@ -855,7 +899,7 @@ app.get('/api/admin/system-health', requireUser, requireAdmin, async (_req, res,
     if (stale.length) alerts.push({ level: 'critical', code: 'stale', message: `${stale.length} 个任务已超过 20 分钟，可能需要退款清理` })
     const configured = {
       supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
-      image: Boolean(process.env.OPENAI_API_KEY), text: Boolean(process.env.OPENAI_TEXT_API_KEY),
+      image: Boolean(process.env.OPENAI_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
       video: videoProvider() === 'aliyun' ? Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) : Boolean(process.env.FAL_KEY)
     }
     for (const [provider, ok] of Object.entries(configured)) if (!ok) alerts.push({ level: 'critical', code: `provider_${provider}`, message: `${provider} 服务尚未完整配置` })
@@ -1464,37 +1508,20 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     const prompt = `商品：${product}\n核心卖点：${features}\n投放平台：${platform}\n文案风格：${style}`
     await enforceContentSafety(req, prompt, 'copy_generation')
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'copy_generation' }, CREDIT_PRICES.copy, 1)
-    const textStream = await withModelFallback('text', req.body.modelId, candidate => textClient().responses.create({
-      model: candidate.id,
-      reasoning: { effort: 'low' },
-      max_output_tokens: 2000,
-      stream: true,
+    const textResponse = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
       instructions: '你是一名资深中国电商文案策划。根据商品资料和平台特点，输出：1. 三个商品标题；2. 五条核心卖点；3. 一段可直接发布的营销正文；4. 三条短促销口号。语言自然、有转化力，不夸大功效，不虚构未提供的参数，不使用Markdown代码块。',
-      input: [
-        {
-          role: 'user',
-          content: [{ type: 'input_text', text: prompt }]
-        }
-      ]
-    }))
-    const stream = textStream.result; textModel = textStream.model
-    let copy = ''
-    let completedResponse
-    for await (const event of stream) {
-      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') copy += event.delta
-      if (event.type === 'response.completed') completedResponse = event.response
-      if (event.type === 'error') throw new Error(event.message || event.error?.message || 'GPT-5.4 流式响应失败')
-    }
-    copy = copy.trim() || responseText(completedResponse)
+      input: prompt,
+      maxOutputTokens: 2000
+    }), retryableProviderError)
+    let copy = textResponse.result.trim(); textModel = textResponse.model
     if (!copy) {
-      console.error('[copy-response]', JSON.stringify({ id: completedResponse?.id, status: completedResponse?.status, error: completedResponse?.error, output: completedResponse?.output }))
-      throw new Error(completedResponse?.error?.message || `GPT-5.4 未返回文案内容（状态：${completedResponse?.status || 'unknown'}）`)
+      throw new Error(`${textModel.name || textModel.id} 未返回文案内容`)
     }
     const { error: saveCopyError } = await supabaseAdmin().from('usage_records').update({ output_text: copy }).eq('id', usageId)
     if (saveCopyError) console.error('[archive-copy]', usageId, saveCopyError.message)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
-    res.json({ copy, usageId, model: textModel.id, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+    res.json({ copy, usageId, model: textModel.id, modelName: textModel.name || textModel.id, provider: textModel.provider, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -1526,24 +1553,13 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
     const chargedCredits = (usedToday || 0) < 3 ? 0 : CREDIT_PRICES.enhance
     usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'prompt_enhance' }, chargedCredits, 1)
 
-    const textStream = await withModelFallback('text', req.body.modelId, candidate => textClient().responses.create({
-      model: candidate.id,
-      reasoning: { effort: 'low' },
-      max_output_tokens: 1000,
-      stream: true,
+    const textResponse = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
       instructions: '你是一名专业的 AI 视觉提示词编辑。请将用户输入改写成一段更清晰、具体、可直接用于图片或视频生成的中文提示词。保留原始主体、商品信息和用户意图，补充合理的构图、环境、光线、镜头、材质、动作与画面风格；不得虚构具体品牌参数，不要解释，不要列点，不要使用 Markdown，只输出改写后的完整提示词。',
-      input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }]
-    }))
-    const stream = textStream.result; textModel = textStream.model
-    let enhancedPrompt = ''
-    let completedResponse
-    for await (const event of stream) {
-      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') enhancedPrompt += event.delta
-      if (event.type === 'response.completed') completedResponse = event.response
-      if (event.type === 'error') throw new Error(event.message || event.error?.message || 'AI 润色响应失败')
-    }
-    enhancedPrompt = enhancedPrompt.trim() || responseText(completedResponse)
-    if (!enhancedPrompt) throw new Error(completedResponse?.error?.message || 'AI 未返回润色内容')
+      input: prompt,
+      maxOutputTokens: 1000
+    }), retryableProviderError)
+    const enhancedPrompt = textResponse.result.trim(); textModel = textResponse.model
+    if (!enhancedPrompt) throw new Error(`${textModel.name || textModel.id} 未返回润色内容`)
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
     res.json({

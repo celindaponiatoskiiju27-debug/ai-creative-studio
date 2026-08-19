@@ -96,7 +96,7 @@
         </div>
         <div class="copy-result-card">
           <div v-if="copyResult && copyUsageId" class="generation-feedback"><span>这次结果有帮助吗？</span><button :class="{ active: feedbackSelections[copyUsageId] === true }" @click="sendGenerationFeedback(copyUsageId,true)">👍 有帮助</button><button :class="{ active: feedbackSelections[copyUsageId] === false }" @click="sendGenerationFeedback(copyUsageId,false)">👎 不满意</button></div>
-          <div class="copy-result-header"><div><h2>生成结果</h2><span>由 GPT-5.4 生成</span></div><div class="copy-header-actions"><button v-if="copyResult" class="history-btn" @click="copyCopyResult">{{ copyCopied ? '已复制' : '复制文案' }}</button><button class="history-btn" @click="openHistory(true)">◷ 文案历史</button></div></div>
+          <div class="copy-result-header"><div><h2>生成结果</h2><span>由 {{ copyModelName || selectedTextModelName }} 生成</span></div><div class="copy-header-actions"><button v-if="copyResult" class="history-btn" @click="copyCopyResult">{{ copyCopied ? '已复制' : '复制文案' }}</button><button class="history-btn" @click="openHistory(true)">◷ 文案历史</button></div></div>
           <div v-if="copyLoading" class="loading-state"><div class="loader"><i /><i /><i /></div><h3>正在分析商品卖点</h3><p>AI 正在为目标平台组织高转化文案…</p></div>
           <div v-else-if="!copyResult" class="copy-empty"><div class="placeholder-icon">文</div><h3>让好商品更会表达</h3><p>填写左侧商品资料，生成标题、卖点和营销正文</p></div>
           <div v-else class="copy-output-wrap"><span class="ai-content-label">AI 生成内容</span><pre class="copy-output">{{ copyResult }}</pre></div>
@@ -476,8 +476,8 @@ export default {
       videoMode: "image",
       models,
       model: models[0],
-      textModels: [{ id: "gpt-5.4", name: "GPT-5.4", description: "电商文案与提示词润色", available: true }],
-      textModelId: "gpt-5.4",
+      textModels: [{ id: "qwen-plus", name: "通义千问 Plus", description: "默认：高性价比电商文案与提示词润色", available: true }],
+      textModelId: "qwen-plus",
       videoModels: [],
       videoModelId: "",
       ratios: [
@@ -515,6 +515,7 @@ export default {
       copyPlatform: "淘宝 / 天猫",
       copyStyle: "突出卖点",
       copyResult: "",
+      copyModelName: "",
       copyUsageId: "",
       copyLoading: false,
       enhanceLoading: false,
@@ -623,6 +624,9 @@ export default {
     };
   },
   computed: {
+    selectedTextModelName() {
+      return this.textModels.find(item => item.id === this.textModelId)?.name || 'AI';
+    },
     selectedTextModelDescription() {
       return this.textModels.find(item => item.id === this.textModelId)?.description || '';
     },
@@ -873,7 +877,7 @@ export default {
       if (this.credits < 1) { this.copyError = "算力不足，请充值后再试"; await this.openRecharge(); return; }
       if (!this.copyProduct.trim()) { this.copyError = "请填写商品名称"; return; }
       if (!this.copyFeatures.trim()) { this.copyError = "请填写商品核心卖点"; return; }
-      this.copyLoading = true; this.copyError = ""; this.copyCopied = false;
+      this.copyLoading = true; this.copyError = ""; this.copyCopied = false; this.copyModelName = "";
       try {
         const response = await fetch('/api/copy/generate', {
           method: 'POST', headers: this.authHeaders({ 'Content-Type': 'application/json' }),
@@ -882,6 +886,7 @@ export default {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || '文案生成失败');
         this.copyResult = data.copy;
+        this.copyModelName = data.modelName || this.textModels.find(item => item.id === data.model)?.name || data.model || '';
         this.copyUsageId = data.usageId || '';
         this.trackEvent('generation_success', { type: 'copy' })
         if (typeof data.credits === 'number') this.profile = { ...this.profile, credits: data.credits };
