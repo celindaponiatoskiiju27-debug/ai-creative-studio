@@ -1,7 +1,7 @@
 create table if not exists public.model_configs (
   id uuid primary key default gen_random_uuid(),
   type text not null check (type in ('image', 'text', 'video')),
-  provider text not null check (provider in ('openai', 'aliyun', 'fal', 'tencent')),
+  provider text not null check (provider in ('openai', 'aliyun', 'volcengine', 'fal', 'tencent')),
   model_id text not null,
   name text not null,
   description text not null default '',
@@ -22,7 +22,7 @@ alter table public.model_configs add column if not exists text_credit_cost integ
 alter table public.model_configs add column if not exists supports_generate boolean not null default true;
 alter table public.model_configs add column if not exists supports_edit boolean not null default false;
 alter table public.model_configs drop constraint if exists model_configs_provider_check;
-alter table public.model_configs add constraint model_configs_provider_check check (provider in ('openai', 'aliyun', 'fal', 'tencent'));
+alter table public.model_configs add constraint model_configs_provider_check check (provider in ('openai', 'aliyun', 'volcengine', 'fal', 'tencent'));
 
 alter table public.model_configs enable row level security;
 
@@ -31,13 +31,17 @@ values
   ('image', 'aliyun', 'qwen-image-2.0', '千问图像 2.0', '国内默认 · 高性价比文生图，也支持图片编辑', '', 10, 2, 2, true, true, true),
   ('image', 'aliyun', 'qwen-image-2.0-pro', '千问图像 2.0 Pro', '国内高质量 · 更强文字渲染与真实质感', '', 20, 4, 4, true, true, true),
   ('image', 'aliyun', 'qwen-image-edit-plus', '千问图片编辑 Plus', '国内默认 · 图片修改与多图合成', '', 10, 3, 3, false, true, true),
+  ('image', 'volcengine', 'doubao-seedream-5-0-lite-260128', 'Seedream 5.0 Lite', '即梦同源 · 高性价比文生图、图生图与多图合成', '', 15, 2, 2, true, true, true),
   ('image', 'aliyun', 'qwen-image-edit-max', '千问图片编辑 Max', '国内高质量 · 更强一致性与几何推理', '', 20, 5, 5, false, true, true),
+  ('image', 'volcengine', 'doubao-seedream-4-5-251128', 'Seedream 4.5', '即梦同源 · 高质量图片生成与编辑，支持高清输出', '', 25, 3, 3, true, true, true),
   ('image', 'tencent', 'hy-image-v3', '腾讯混元 Hy-Image 3.0', '国内备用 · 支持文生图与最多 3 张参考图', '', 30, 3, 3, true, true, true),
   ('image', 'openai', 'gpt-image-2', 'GPT Image 2', '海外高质量备用图片模型', '', 90, 5, 5, true, true, true),
   ('text', 'aliyun', 'qwen-plus', '通义千问 Plus', '默认：高性价比电商文案与提示词润色', '', 10, 1, 1, true, false, true),
   ('text', 'openai', 'gpt-5.4', 'GPT-5.4', '备用：百炼服务故障时自动兜底', '', 20, 2, 2, true, false, true),
   ('video', 'aliyun', 'wan2.6-i2v-flash', '通义万相 2.6', '国内默认 · 图生 GIF 与低成本文生视频', 'wan2.6-t2v', 10, 6, 25, true, true, true),
+  ('video', 'volcengine', 'doubao-seedance-2-0-fast-260128', 'Seedance 2.0 Fast', '即梦同源 · 国内高质量快速视频，支持文生视频与图生视频', 'doubao-seedance-2-0-fast-260128', 15, 12, 30, true, true, true),
   ('video', 'tencent', 'pixverse-video-c1', 'PixVerse C1', '腾讯 TokenHub · 高动态视频，适合图片动起来与 GIF', 'pixverse-video-c1', 20, 10, 20, true, true, true),
+  ('video', 'volcengine', 'doubao-seedance-2-0-260128', 'Seedance 2.0', '即梦同源 · 高质量多镜头视频与角色一致性', 'doubao-seedance-2-0-260128', 25, 18, 45, true, true, true),
   ('video', 'tencent', 'kling-video-v3', 'Kling V3', '腾讯 TokenHub · 高质量视频，支持智能分镜', 'kling-video-v3', 30, 24, 40, true, true, true),
   ('video', 'fal', 'fal-ai/kling-video/v1.6/standard/image-to-video', 'Kling 1.6（Fal）', '海外备用 · 当前无额度，保留配置', 'fal-ai/kling-video/v1.6/standard/text-to-video', 80, 20, 35, true, true, false),
   ('video', 'fal', 'fal-ai/ltx-video/image-to-video', 'LTX Video（Fal）', '海外备用 · 当前无额度，保留配置', '', 90, 12, 30, true, true, false)

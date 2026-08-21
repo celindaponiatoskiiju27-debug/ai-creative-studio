@@ -346,9 +346,9 @@ function validateModelConfig(body) {
   const modelId = String(body.model_id || body.id || '').trim()
   const name = String(body.name || '').trim()
   if (!['image', 'text', 'video'].includes(type)) { const error = new Error('请选择正确的功能类型'); error.status = 400; throw error }
-  if (!['openai', 'aliyun', 'fal', 'tencent'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
+  if (!['openai', 'aliyun', 'volcengine', 'fal', 'tencent'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
   if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
-  if (type === 'image' && !['openai', 'aliyun', 'tencent'].includes(provider)) { const error = new Error('图片模型供应商配置不正确'); error.status = 400; throw error }
+  if (type === 'image' && !['openai', 'aliyun', 'volcengine', 'tencent'].includes(provider)) { const error = new Error('图片模型供应商配置不正确'); error.status = 400; throw error }
   if (type === 'text' && !['openai', 'aliyun'].includes(provider)) { const error = new Error('文案模型仅支持 OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
   return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)), credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.credit_cost ?? body.creditCost ?? 1) || 0))), text_credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.text_credit_cost ?? body.textCreditCost ?? body.credit_cost ?? body.creditCost ?? 1) || 0))), supports_generate: body.supports_generate ?? body.supportsGenerate ?? true, supports_edit: body.supports_edit ?? body.supportsEdit ?? false }
 }
@@ -357,6 +357,7 @@ function modelCatalog() {
   const openAIImageReady = Boolean(process.env.OPENAI_API_KEY) || mockEnabled
   const aliyunImageReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
   const tencentImageReady = Boolean(process.env.TENCENT_API_KEY)
+  const arkReady = Boolean(process.env.ARK_API_KEY)
   const openAITextReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
   const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
@@ -365,12 +366,12 @@ function modelCatalog() {
   const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [
     { id: 'qwen-image-2.0', name: '千问图像 2.0', provider: 'aliyun', description: '国内默认 · 高性价比文生图与编辑', creditCost: 2, supportsGenerate: true, supportsEdit: true, enabled: true },
     { id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '海外高质量备用图片模型', creditCost: 5, supportsGenerate: true, supportsEdit: true, enabled: true }
-  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : item.provider === 'tencent' ? tencentImageReady : false) && !modelIsCoolingDown('image', item) }))
+  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : item.provider === 'volcengine' ? arkReady : item.provider === 'tencent' ? tencentImageReady : false) && !modelIsCoolingDown('image', item) }))
   const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
     { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
     { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
   ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
-  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : false) }))
+  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'volcengine' ? arkReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : false) }))
   return { image: images, text: texts, video: videos }
 }
 
@@ -432,6 +433,30 @@ async function dashScopeRequest(url, options = {}) {
   return payload
 }
 
+function arkBaseUrl() {
+  if (!process.env.ARK_API_KEY) {
+    const error = new Error('服务端尚未配置火山方舟 ARK_API_KEY')
+    error.status = 503
+    throw error
+  }
+  return (process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3').trim().replace(/\/$/, '')
+}
+
+async function arkRequest(pathname, options = {}, timeout = 180000) {
+  const response = await fetch(`${arkBaseUrl()}${pathname}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${process.env.ARK_API_KEY}`, ...(options.headers || {}) },
+    signal: AbortSignal.timeout(timeout)
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(payload.error?.message || payload.message || payload.error?.code || `火山方舟接口请求失败（${response.status}）`)
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 
 const qwenImageSizes = { '1:1': '2048*2048', '4:3': '2368*1728', '16:9': '2688*1536', '3:4': '1728*2368', '9:16': '1536*2688' }
@@ -462,6 +487,35 @@ async function generateAliyunImage({ model, prompt, ratio, count, files = [] }) 
     })
   })
   return extractDashScopeImages(payload)
+}
+
+async function generateVolcengineImage({ model, prompt, ratio, count, files = [] }) {
+  if (files.length > 10) {
+    const error = new Error('Seedream 最多支持 10 张参考图片')
+    error.status = 400
+    throw error
+  }
+  const image = files.map(file => `data:${file.mimetype};base64,${file.buffer.toString('base64')}`)
+  const sizes = { '1:1': '2048x2048', '4:3': '2304x1728', '16:9': '2560x1440', '3:4': '1728x2304', '9:16': '1440x2560' }
+  const results = []
+  for (let index = 0; index < Math.min(4, Math.max(1, Number(count) || 1)); index += 1) {
+    const payload = await arkRequest('/images/generations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model.id,
+        prompt: prompt.trim(),
+        size: sizes[ratio] || '2048x2048',
+        response_format: 'url',
+        watermark: false,
+        ...(image.length ? { image } : {})
+      })
+    })
+    const url = payload.data?.[0]?.url || (payload.data?.[0]?.b64_json ? `data:image/png;base64,${payload.data[0].b64_json}` : '')
+    if (!url) throw new Error('Seedream 未返回图片文件')
+    results.push(url)
+  }
+  return results
 }
 
 const tencentImageSizes = { '1:1': '1024x1024', '4:3': '1152x864', '16:9': '1344x768', '3:4': '864x1152', '9:16': '768x1344' }
@@ -585,6 +639,50 @@ async function generateAliyunVideo({ file, mode, prompt, ratio, selected }) {
   throw error
 }
 
+async function generateVolcengineVideo({ file, mode, prompt, ratio, selected }) {
+  const model = selected?.id || process.env.SEEDANCE_MODEL || 'doubao-seedance-2-0-fast-260128'
+  const content = [{ type: 'text', text: prompt.trim() }]
+  if (mode === 'image') {
+    content.push({
+      type: 'image_url',
+      image_url: { url: `data:${file.mimetype};base64,${file.buffer.toString('base64')}` }
+    })
+  }
+  const submitted = await arkRequest('/contents/generations/tasks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      content,
+      ratio: ['16:9', '9:16', '1:1', '4:3', '3:4'].includes(ratio) ? ratio : '16:9',
+      duration: 5,
+      resolution: '720p',
+      generate_audio: false,
+      watermark: false
+    })
+  })
+  const taskId = submitted.id
+  if (!taskId) throw new Error('Seedance 未返回视频任务 ID')
+  console.log('[seedance-video-submitted]', { taskId, model, mode, ratio })
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
+    await wait(5000)
+    const task = await arkRequest(`/contents/generations/tasks/${encodeURIComponent(taskId)}`, {}, 120000)
+    if (task.status === 'succeeded') {
+      if (!task.content?.video_url) throw new Error('Seedance 任务成功但未返回视频文件')
+      return task.content.video_url
+    }
+    if (['failed', 'cancelled', 'expired'].includes(task.status)) {
+      const message = task.error?.message || `Seedance 视频生成失败（${task.status}）`
+      const code = task.error?.code || ''
+      throw new Error(`${message}${code ? `（${code}）` : ''}；任务ID：${taskId}`)
+    }
+  }
+  const error = new Error(`Seedance 视频生成超过10分钟仍未完成；任务ID：${taskId}`)
+  error.status = 504
+  throw error
+}
+
 async function generateFalVideo({ file, mode, prompt, ratio, selected }) {
   configureFal()
   const imageModel = selected?.id || process.env.VIDEO_MODEL || 'fal-ai/ltx-video/image-to-video'
@@ -685,6 +783,7 @@ async function generateTencentVideo(options) {
 
 async function generateVideo(options) {
   if (options.selected?.provider === 'aliyun') return generateAliyunVideo(options)
+  if (options.selected?.provider === 'volcengine') return generateVolcengineVideo(options)
   if (options.selected?.provider === 'tencent') return generateTencentVideo(options)
   return generateFalVideo(options)
 }
@@ -937,8 +1036,9 @@ app.get('/api/health', (_req, res) => res.json({
   ok: true,
   configured: Boolean(process.env.OPENAI_API_KEY),
   tencentConfigured: Boolean(process.env.TENCENT_API_KEY),
+  arkConfigured: Boolean(process.env.ARK_API_KEY),
   textConfigured: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-  videoConfigured: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')),
+  videoConfigured: Boolean(process.env.ARK_API_KEY || (process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')),
   mock: mockEnabled,
   model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
   videoModel: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'),
@@ -1253,8 +1353,8 @@ app.get('/api/admin/system-health', requireUser, requireAdmin, async (_req, res,
     if (stale.length) alerts.push({ level: 'critical', code: 'stale', message: `${stale.length} 个任务已超过 20 分钟，可能需要退款清理` })
     const configured = {
       supabase: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
-      image: Boolean(process.env.OPENAI_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.TENCENT_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-      video: Boolean((process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true'))
+      image: Boolean(process.env.ARK_API_KEY || process.env.OPENAI_API_KEY || process.env.DASHSCOPE_API_KEY || process.env.TENCENT_API_KEY), text: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
+      video: Boolean(process.env.ARK_API_KEY || (process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true'))
     }
     for (const [provider, ok] of Object.entries(configured)) if (!ok) alerts.push({ level: 'critical', code: `provider_${provider}`, message: `${provider} 服务尚未完整配置` })
     res.json({ status: alerts.some(item => item.level === 'critical') ? 'critical' : (alerts.length ? 'warning' : 'healthy'), checkedAt: new Date().toISOString(), uptimeSeconds: Math.round(process.uptime()), configured, metrics: { failedHour, pending: pending.length, stale: stale.length, dayUsedFen, monthUsedFen, dayPercent, monthPercent }, alerts })
@@ -2114,6 +2214,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     else {
       const generatedImage = await withImageFallback(req.body.modelId, 'generate', async model => {
         if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
+        if (model.provider === 'volcengine') return generateVolcengineImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
         if (model.provider === 'tencent') return generateTencentImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
         return images(await client().images.generate(options({ ...req.body, selectedModel: model })))
       })
@@ -2147,6 +2248,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     else {
       const editedImage = await withImageFallback(req.body.modelId, 'edit', async model => {
         if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
+        if (model.provider === 'volcengine') return generateVolcengineImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
         if (model.provider === 'tencent') return generateTencentImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
         const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
         return images(await client().images.edit({ ...options({ ...req.body, selectedModel: model }), image }))
