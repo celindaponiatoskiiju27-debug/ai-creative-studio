@@ -806,7 +806,11 @@ export default {
       try {
         const response = await fetch(`/api/video-jobs/${encodeURIComponent(jobId)}`, { headers: this.authHeaders(), cache: 'no-store' });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error || '读取任务状态失败');
+        if (!response.ok) {
+          const error = new Error(data.error || '读取任务状态失败');
+          error.status = response.status;
+          throw error;
+        }
         this.activeVideoJob = data.job;
         if (data.job.status === 'completed') {
           this.results = data.job.outputs || []; this.currentUsageId = data.job.usageId || '';
@@ -815,13 +819,18 @@ export default {
           await this.loadProfile().catch(() => {});
           return;
         }
-        if (data.job.status === 'failed') {
+        if (['failed', 'cancelled', 'expired'].includes(data.job.status)) {
           this.errorMessage = `${data.job.error || '生成失败'}；本次算力已自动退还`;
           this.loading = false; this.activeVideoJob = null; this.state = this.results.length ? 'done' : 'empty';
           await this.loadProfile().catch(() => {});
           return;
         }
       } catch (error) {
+        if ([401, 403, 404].includes(error.status)) {
+          this.errorMessage = error.message;
+          this.loading = false; this.activeVideoJob = null; this.state = this.results.length ? 'done' : 'empty';
+          return;
+        }
         this.errorMessage = `${error.message}，正在自动重试查询`;
       }
       this.videoJobTimer = setTimeout(() => this.pollVideoJob(jobId), 3000);
@@ -846,7 +855,6 @@ export default {
     async loadAssetPage(page) {
       if (!this.session) { this.requestLogin('请先登录后查看个人资产'); return; }
       this.assetLoading = true; this.assetError = '';
-      let keepLoading = false;
       try {
         if (page === 'works') {
           const response = await fetch('/api/usage', { headers: this.authHeaders() }); const data = await response.json();
@@ -1269,6 +1277,7 @@ export default {
       this.errorMessage = "";
       this.loading = true;
       this.state = "loading";
+      let keepLoading = false;
       try {
         let response;
         if (this.page === "video") {
