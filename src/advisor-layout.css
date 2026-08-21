@@ -1,0 +1,23 @@
+/* AI 顾问使用内部滚动，避免出现浏览器外层滚动条。 */
+.advisor-shell{
+  height:calc(100vh - 82px);
+  max-height:calc(100vh - 82px);
+  overflow:hidden;
+}
+.advisor-sessions,.advisor-messages{
+  scrollbar-width:none;
+  -ms-overflow-style:none;
+}
+.advisor-sessions::-webkit-scrollbar,.advisor-messages::-webkit-scrollbar{
+  display:none;
+  width:0;
+  height:0;
+}
+@media(max-width:760px){
+  .advisor-shell{
+    height:calc(100vh - 82px);
+    min-height:0;
+    max-height:calc(100vh - 82px);
+  }
+  .advisor-main{min-height:0}
+}
