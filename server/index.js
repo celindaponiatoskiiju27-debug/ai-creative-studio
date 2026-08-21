@@ -539,7 +539,7 @@ async function withImageFallback(requestedId, capability, runner) {
   throw lastError
 }
 
-async function generateAliyunVideo({ file, mode, prompt, selected }) {
+async function generateAliyunVideo({ file, mode, prompt, ratio, selected }) {
   const baseUrl = dashScopeBaseUrl()
   const imageModel = selected?.id || process.env.VIDEO_MODEL || 'wan2.6-i2v-flash'
   // 文生视频允许由 Render 环境变量统一指定默认模型；图片动起来仍使用所选图生视频模型。
@@ -549,20 +549,22 @@ async function generateAliyunVideo({ file, mode, prompt, selected }) {
     : (textModel.startsWith('fal-ai/') ? 'wan2.6-t2v' : textModel)
   const input = { prompt: prompt.trim() }
   if (mode === 'image') input.img_url = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`
+  const videoSizes = { '16:9': '1280*720', '9:16': '720*1280', '1:1': '960*960', '4:3': '1088*832', '3:4': '832*1088' }
+  const parameters = mode === 'text'
+    ? { size: videoSizes[ratio] || '1280*720', duration: 5, prompt_extend: false, watermark: false }
+    : { resolution: '720P', duration: 5, prompt_extend: true, watermark: false, audio: false, shot_type: 'single' }
   const submitted = await dashScopeRequest(`${baseUrl}/services/aigc/video-generation/video-synthesis`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-DashScope-Async': 'enable' },
     body: JSON.stringify({
       model,
       input,
-      parameters: {
-        resolution: '720P', duration: 5, prompt_extend: true, watermark: false,
-        ...(mode === 'image' && model === 'wan2.6-i2v-flash' ? { audio: false, shot_type: 'single' } : {})
-      }
+      parameters
     })
   })
   const taskId = submitted.output?.task_id
   if (!taskId) throw new Error('百炼未返回视频任务 ID')
+  console.log('[aliyun-video-submitted]', { taskId, model, mode, size: parameters.size || parameters.resolution })
   const deadline = Date.now() + 10 * 60 * 1000
   while (Date.now() < deadline) {
     await wait(5000)
@@ -573,10 +575,12 @@ async function generateAliyunVideo({ file, mode, prompt, selected }) {
       return task.output.video_url
     }
     if (['FAILED', 'CANCELED', 'UNKNOWN'].includes(status)) {
-      throw new Error(task.output?.message || task.message || `百炼视频生成失败（${status}）`)
+      const code = task.output?.code || task.code || ''
+      const message = task.output?.message || task.message || `百炼视频生成失败（${status}）`
+      throw new Error(`${message}${code ? `（${code}）` : ''}；任务ID：${taskId}`)
     }
   }
-  const error = new Error('百炼视频生成超时，请稍后重试')
+  const error = new Error(`百炼视频生成超过10分钟仍未完成；任务ID：${taskId}`)
   error.status = 504
   throw error
 }
@@ -1932,6 +1936,79 @@ app.patch('/api/dramas/:projectId/voice', requireUser, async (req, res, next) =>
     if (error) throw error
     res.json({ shots: shots || [] })
   } catch (error) { next(error) }
+})
+
+app.get('/api/chat/sessions', requireUser, async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+    const { data, error } = await supabaseAdmin().from('ai_chat_sessions').select('id,title,created_at,updated_at').eq('user_id', req.user.id).order('updated_at', { ascending: false }).limit(50)
+    if (error) throw error
+    res.json({ sessions: data || [] })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/chat/sessions/:id/messages', requireUser, async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+    const { data: chat, error: chatError } = await supabaseAdmin().from('ai_chat_sessions').select('id,title').eq('id', req.params.id).eq('user_id', req.user.id).single()
+    if (chatError) { chatError.status = chatError.code === 'PGRST116' ? 404 : undefined; throw chatError }
+    const { data, error } = await supabaseAdmin().from('ai_chat_messages').select('id,role,content,model_id,provider,usage_id,created_at').eq('session_id', chat.id).eq('user_id', req.user.id).order('created_at').limit(200)
+    if (error) throw error
+    res.json({ session: chat, messages: data || [] })
+  } catch (error) { next(error) }
+})
+
+app.delete('/api/chat/sessions/:id', requireUser, async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin().from('ai_chat_sessions').delete().eq('id', req.params.id).eq('user_id', req.user.id)
+    if (error) throw error
+    res.status(204).end()
+  } catch (error) { next(error) }
+})
+
+app.post('/api/chat/messages', requireUser, async (req, res, next) => {
+  let usageId
+  try {
+    await refreshModelConfigs()
+    const content = String(req.body.content || '').trim().slice(0, 3000)
+    if (content.length < 2) return res.status(400).json({ error: '请描述你想讨论的电商问题' })
+    await enforceContentSafety(req, content, 'ai_chat')
+    let chat
+    if (req.body.sessionId) {
+      const { data, error } = await supabaseAdmin().from('ai_chat_sessions').select('*').eq('id', req.body.sessionId).eq('user_id', req.user.id).single()
+      if (error) { error.status = error.code === 'PGRST116' ? 404 : undefined; throw error }
+      chat = data
+    } else {
+      const title = content.replace(/\s+/g, ' ').slice(0, 30) || '新对话'
+      const { data, error } = await supabaseAdmin().from('ai_chat_sessions').insert({ user_id: req.user.id, title }).select('*').single()
+      if (error) throw error
+      chat = data
+    }
+    const { data: history, error: historyError } = await supabaseAdmin().from('ai_chat_messages').select('role,content').eq('session_id', chat.id).eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(20)
+    if (historyError) throw historyError
+    const selected = selectedModel('text', req.body.modelId)
+    const creditCost = Math.max(0, Number(selected.creditCost ?? CREDIT_PRICES.copy))
+    usageId = await reserveGeneration(req.user.id, { prompt: content, count: 1, action: 'ai_chat' }, creditCost, 1)
+    const { data: userMessage, error: userError } = await supabaseAdmin().from('ai_chat_messages').insert({ session_id: chat.id, user_id: req.user.id, role: 'user', content }).select('*').single()
+    if (userError) throw userError
+    const transcript = [...(history || []).reverse(), { role: 'user', content }].map(item => `${item.role === 'assistant' ? '顾问' : '用户'}：${item.content}`).join('\n\n')
+    const generated = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
+      instructions: '你是中国电商从业者的资深经营顾问。围绕选品、商品定位、用户画像、内容营销、平台运营、投放、活动策划、转化优化和复盘提供具体可执行的建议。先理解用户现状；信息不足时提出1至3个关键问题；给方案时写清目标、步骤、优先级、预算假设、观察指标和风险。不得虚构平台规则、效果数据或商品参数，不承诺收益，不协助刷单、欺诈、侵权、虚假宣传或规避平台监管。使用自然中文交流，不要每次都输出冗长模板。',
+      input: transcript,
+      maxOutputTokens: 2200
+    }), retryableProviderError)
+    const reply = generated.result.trim()
+    if (!reply) throw new Error(`${generated.model.name || generated.model.id} 未返回顾问回复`)
+    const { data: assistantMessage, error: assistantError } = await supabaseAdmin().from('ai_chat_messages').insert({ session_id: chat.id, user_id: req.user.id, role: 'assistant', content: reply, model_id: generated.model.id, provider: generated.model.provider, usage_id: usageId }).select('*').single()
+    if (assistantError) throw assistantError
+    await supabaseAdmin().from('ai_chat_sessions').update({ updated_at: new Date().toISOString() }).eq('id', chat.id).eq('user_id', req.user.id)
+    await finishGeneration(usageId, true)
+    const profile = await profileFor(req.user.id)
+    res.json({ session: { id: chat.id, title: chat.title }, userMessage, assistantMessage, chargedCredits: creditCost, credits: profile.credits })
+  } catch (error) {
+    await rollbackGeneration(usageId, error)
+    next(error)
+  }
 })
 
 app.post('/api/copy/generate', requireUser, async (req, res, next) => {

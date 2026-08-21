@@ -274,6 +274,7 @@
           <div v-if="state === 'done' && currentUsageId" class="generation-feedback media-feedback"><span>这次结果有帮助吗？</span><button :class="{ active: feedbackSelections[currentUsageId] === true }" @click="sendGenerationFeedback(currentUsageId,true)">👍 有帮助</button><button :class="{ active: feedbackSelections[currentUsageId] === false }" @click="sendGenerationFeedback(currentUsageId,false)">👎 不满意</button></div>
         </div>
       </section>
+      <AiAdvisor v-else-if="page === 'advisor'" :session="session" :profile="profile" :text-models="textModels" @login="requestLogin('请先登录后咨询电商AI顾问')" @recharge="openRecharge" @credits="updateCredits" @refresh-credits="loadProfile" />
       <ShortDramaStudio v-else-if="page === 'drama'" :session="session" :text-models="textModels" :video-models="videoModels" @login="requestLogin('请先登录后创建AI短剧')" @credits="updateCredits" @refresh-credits="loadProfile" />
       <section v-else-if="page === 'canvas'" class="design-view">
         <aside class="design-controls">
@@ -444,17 +445,19 @@ import AuthModal from './AuthModal.vue'
 import AccountModal from './AccountModal.vue'
 import LegalModal from './LegalModal.vue'
 import ShortDramaStudio from './ShortDramaStudio.vue'
+import AiAdvisor from './AiAdvisor.vue'
 import { supabase, supabaseConfigured } from './supabase'
 
 export default {
   name: "App",
-  components: { AuthModal, AccountModal, LegalModal, ShortDramaStudio },
+  components: { AuthModal, AccountModal, LegalModal, ShortDramaStudio, AiAdvisor },
   data() {
     const models = [{ id: "gpt-image-2", name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型", available: true }];
     return {
       nav: [
         { id: "home", name: "产品首页", icon: "⌂" },
         { label: "创作" },
+        { id: "advisor", name: "电商 AI 顾问", icon: "问", new: true },
         { id: "copy", name: "电商文案", icon: "文", new: true },
         { id: "image", name: "图片生成", icon: "▧" },
         { id: "video", name: "视频生成", icon: "▷", new: true },
@@ -467,6 +470,7 @@ export default {
       ],
       pages: {
         home: ["灵境 AI", "为电商商家提供一站式 AI 内容创作"],
+        advisor: ["电商 AI 顾问", "连续讨论选品、运营、投放与内容方案"],
         copy: ["电商文案", "为电商商品生成高转化营销内容"],
         image: ["图片生成", "把你的想象变成画面"],
         video: ["视频生成", "选择让图片动起来，或直接用文字生成视频"],
@@ -902,7 +906,7 @@ export default {
       } catch (error) { this.historyError = error.message; }
       finally { this.historyLoading = false; }
     },
-    historyName(action) { return ({ copy_generation: '电商文案', image_generation: '图片生成', image_edit: '图生图 / 多图合成', gif_generation: 'GIF 动图', video_generation: '视频生成' })[action] || '图片生成'; },
+    historyName(action) { return ({ ai_chat: 'AI 顾问对话', copy_generation: '电商文案', image_generation: '图片生成', image_edit: '图生图 / 多图合成', gif_generation: 'GIF 动图', video_generation: '视频生成' })[action] || 'AI 生成'; },
     historyIcon(action) { return ({ copy_generation: '文', image_generation: '图', image_edit: '改', gif_generation: '动', video_generation: '视' })[action] || '图'; },
     historyStatus(status) { return ({ pending: '生成中', completed: '成功', failed: '失败已退款' })[status] || status; },
     formatHistoryDate(value) { return value ? new Date(value).toLocaleString('zh-CN') : ''; },

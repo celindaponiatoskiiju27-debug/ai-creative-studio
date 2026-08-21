@@ -12,5 +12,6 @@ import './referrals.css'
 import './legal.css'
 import './landing.css'
 import './community.css'
+import './advisor.css'
 Vue.config.productionTip=false
 new Vue({render:h=>h(App)}).$mount('#app')
