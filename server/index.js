@@ -2111,6 +2111,70 @@ app.post('/api/chat/messages', requireUser, async (req, res, next) => {
   }
 })
 
+const PRODUCT_LINK_HOSTS = ['taobao.com', 'tmall.com', 'jd.com', 'pinduoduo.com', 'yangkeduo.com', 'douyin.com', 'xiaohongshu.com', 'xhslink.com', 'goofish.com', '2.taobao.com']
+const allowedProductHost = hostname => PRODUCT_LINK_HOSTS.some(host => hostname === host || hostname.endsWith(`.${host}`))
+const decodeHtml = value => String(value || '').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+const metaValue = (html, key) => {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const patterns = [
+    new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']+)["']`, 'i'),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["']`, 'i')
+  ]
+  for (const pattern of patterns) { const match = html.match(pattern); if (match) return decodeHtml(match[1]).trim() }
+  return ''
+}
+const jsonLdProducts = html => {
+  const results = []
+  for (const match of html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const parsed = JSON.parse(decodeHtml(match[1]).trim())
+      const values = Array.isArray(parsed) ? parsed : parsed?.['@graph'] || [parsed]
+      for (const value of values) if (String(value?.['@type'] || '').toLowerCase() === 'product') results.push(value)
+    } catch {}
+  }
+  return results
+}
+async function fetchPublicProductPage(inputUrl) {
+  let current = new URL(inputUrl)
+  for (let hop = 0; hop < 4; hop += 1) {
+    if (!['http:', 'https:'].includes(current.protocol) || !allowedProductHost(current.hostname.toLowerCase())) {
+      const error = new Error('目前仅支持淘宝、天猫、京东、拼多多、抖音、小红书和闲鱼的公开商品链接')
+      error.status = 400
+      throw error
+    }
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 10000)
+    let response
+    try { response = await fetch(current, { redirect: 'manual', signal: controller.signal, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LingjingProductReader/1.0)', Accept: 'text/html,application/xhtml+xml' } }) }
+    finally { clearTimeout(timer) }
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location'); if (!location) throw new Error('商品链接跳转地址无效')
+      current = new URL(location, current); continue
+    }
+    if (!response.ok) { const error = new Error(`商品页面暂时无法读取（HTTP ${response.status}）`); error.status = 422; throw error }
+    const declaredLength = Number(response.headers.get('content-length') || 0)
+    if (declaredLength > 2 * 1024 * 1024) { const error = new Error('商品页面内容过大，请手动填写商品信息'); error.status = 422; throw error }
+    const html = (await response.text()).slice(0, 2 * 1024 * 1024)
+    return { html, finalUrl: current.toString() }
+  }
+  const error = new Error('商品链接跳转次数过多'); error.status = 422; throw error
+}
+
+app.post('/api/product-kit/analyze', requireUser, async (req, res, next) => {
+  try {
+    const inputUrl = String(req.body.url || '').trim()
+    if (!inputUrl || inputUrl.length > 2000) return res.status(400).json({ error: '请输入有效的商品链接' })
+    const { html, finalUrl } = await fetchPublicProductPage(inputUrl)
+    const product = jsonLdProducts(html)[0] || {}
+    const rawImages = product.image || metaValue(html, 'og:image')
+    const images = (Array.isArray(rawImages) ? rawImages : [rawImages]).map(item => typeof item === 'string' ? item : item?.url).filter(url => /^https?:\/\//i.test(url || '')).slice(0, 4)
+    const name = String(product.name || metaValue(html, 'og:title') || metaValue(html, 'twitter:title') || '').replace(/\s*[-_|].{0,30}(淘宝|天猫|京东|拼多多|抖音|小红书|闲鱼).*$/i, '').trim().slice(0, 120)
+    const description = String(product.description || metaValue(html, 'og:description') || metaValue(html, 'description') || '').replace(/\s+/g, ' ').trim().slice(0, 1000)
+    const brand = typeof product.brand === 'string' ? product.brand : product.brand?.name || ''
+    const category = String(product.category || '').slice(0, 60)
+    res.json({ product: { name, brand: String(brand).slice(0, 60), category, specs: '', features: description, audience: '', images }, sourceUrl: finalUrl, warning: name ? '' : '平台未公开返回完整商品名称，请根据商品页面手动补全并核验。' })
+  } catch (error) { next(error) }
+})
+
 app.post('/api/copy/generate', requireUser, async (req, res, next) => {
   let usageId
   try {

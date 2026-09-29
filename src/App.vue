@@ -58,14 +58,14 @@
         <div class="landing-hero">
           <div class="landing-copy">
             <span class="landing-tag">专为电商创作者打造</span>
-            <h2>一站生成文案、商品图<br />动图与营销视频</h2>
-            <p>不用学习复杂工具，从商品卖点到可发布素材，几分钟完成整套电商内容创作。</p>
-            <div class="landing-actions"><button class="landing-primary" @click="go('image')">免费开始创作</button><button @click="go('copy')">先生成电商文案</button></div>
+            <h2>一个商品链接<br />5 分钟生成整套上架素材</h2>
+            <p>自动整理商品事实，生成 3 张主图、详情页结构、标题与卖点，并完成上架前风险检查。</p>
+            <div class="landing-actions"><button class="landing-primary" @click="go('listing')">免费生成第一套</button><button @click="go('image')">使用单项创作工具</button></div>
             <small>注册即送体验算力 · 使用生成能力时才需要登录</small>
           </div>
           <div class="landing-showcase">
-            <div class="showcase-main"><span>AI 商品视觉</span><b>让一张商品图<br />拥有更多可能</b><button @click="go('video')">让图片动起来 →</button></div>
-            <div class="showcase-chip copy-chip">高转化文案</div><div class="showcase-chip image-chip">商品主图</div><div class="showcase-chip video-chip">GIF / 视频</div>
+            <div class="showcase-main"><span>AI 上架素材包</span><b>从商品资料<br />到可检查的交付物</b><button @click="go('listing')">开始生成整套素材 →</button></div>
+            <div class="showcase-chip copy-chip">标题与卖点</div><div class="showcase-chip image-chip">主图 × 3</div><div class="showcase-chip video-chip">详情页结构</div>
           </div>
         </div>
         <div class="landing-features">
@@ -76,6 +76,7 @@
         </div>
         <div class="landing-bottom"><div><span>按需使用，更适合刚起步的商家</span><h3>先免费体验，满意后再获取更多算力</h3><p>生成失败自动退还算力，作品自动保存到云端。</p></div><button @click="openRecharge">查看算力套餐</button></div>
       </section>
+      <ProductLaunch v-if="page === 'listing'" :session="session" :profile="profile" :text-models="textModels" :image-models="models" @login="requestLogin('请先登录后生成商品上架素材')" @recharge="openRecharge" @credits="updateCredits" @refresh-credits="loadProfile" />
       <section v-if="page === 'copy'" class="copywriter-view">
         <div class="copy-form-card">
           <div class="copy-intro"><span>AI</span><div><b>电商文案生成器</b><small>填写商品信息，快速生成可直接使用的营销文案</small></div></div>
@@ -446,17 +447,19 @@ import AccountModal from './AccountModal.vue'
 import LegalModal from './LegalModal.vue'
 import ShortDramaStudio from './ShortDramaStudio.vue'
 import AiAdvisor from './AiAdvisor.vue'
+import ProductLaunch from './ProductLaunch.vue'
 import { supabase, supabaseConfigured } from './supabase'
 
 export default {
   name: "App",
-  components: { AuthModal, AccountModal, LegalModal, ShortDramaStudio, AiAdvisor },
+  components: { AuthModal, AccountModal, LegalModal, ShortDramaStudio, AiAdvisor, ProductLaunch },
   data() {
     const models = [{ id: "gpt-image-2", name: "GPT Image 2", desc: "OpenAI 新一代高质量图片模型", available: true }];
     return {
       nav: [
         { id: "home", name: "产品首页", icon: "⌂" },
         { label: "创作" },
+        { id: "listing", name: "一键上架", icon: "包", new: true },
         { id: "advisor", name: "电商 AI 顾问", icon: "问", new: true },
         { id: "copy", name: "电商文案", icon: "文", new: true },
         { id: "image", name: "图片生成", icon: "▧" },
@@ -470,6 +473,7 @@ export default {
       ],
       pages: {
         home: ["灵境 AI", "为电商商家提供一站式 AI 内容创作"],
+        listing: ["AI 商品上架工作台", "输入商品链接，生成一套可检查、可下载的上架素材"],
         advisor: ["电商 AI 顾问", "连续讨论选品、运营、投放与内容方案"],
         copy: ["电商文案", "为电商商品生成高转化营销内容"],
         image: ["图片生成", "把你的想象变成画面"],
