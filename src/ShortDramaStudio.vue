@@ -41,7 +41,7 @@ export default {
         || this.videoModels.find(item => item.available);
     },
     selectableVideoModels() {
-      const models = this.videoModels.filter(item => item.textModel && ['aliyun', 'volcengine'].includes(item.provider));
+      const models = this.videoModels.filter(item => (item.textModel && ['aliyun', 'volcengine'].includes(item.provider)) || item.provider === 'xai');
       return models.length ? models : this.videoModels;
     },
     videoCost() { return Math.max(0, Number(this.availableVideoModel?.textCreditCost ?? 25)); },

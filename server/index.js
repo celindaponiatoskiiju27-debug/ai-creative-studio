@@ -346,10 +346,11 @@ function validateModelConfig(body) {
   const modelId = String(body.model_id || body.id || '').trim()
   const name = String(body.name || '').trim()
   if (!['image', 'text', 'video'].includes(type)) { const error = new Error('请选择正确的功能类型'); error.status = 400; throw error }
-  if (!['openai', 'aliyun', 'volcengine', 'fal', 'tencent'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
+  if (!['openai', 'aliyun', 'volcengine', 'fal', 'tencent', 'xai'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
   if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
-  if (type === 'image' && !['openai', 'aliyun', 'volcengine', 'tencent'].includes(provider)) { const error = new Error('图片模型供应商配置不正确'); error.status = 400; throw error }
+  if (type === 'image' && !['openai', 'aliyun', 'volcengine', 'tencent', 'xai'].includes(provider)) { const error = new Error('图片模型供应商配置不正确'); error.status = 400; throw error }
   if (type === 'text' && !['openai', 'aliyun'].includes(provider)) { const error = new Error('文案模型仅支持 OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
+  if (provider === 'xai' && !['image', 'video'].includes(type)) { const error = new Error('xAI Grok 当前仅支持图片和视频生成'); error.status = 400; throw error }
   return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)), credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.credit_cost ?? body.creditCost ?? 1) || 0))), text_credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.text_credit_cost ?? body.textCreditCost ?? body.credit_cost ?? body.creditCost ?? 1) || 0))), supports_generate: body.supports_generate ?? body.supportsGenerate ?? true, supports_edit: body.supports_edit ?? body.supportsEdit ?? false }
 }
 
@@ -362,16 +363,17 @@ function modelCatalog() {
   const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
   const falReady = Boolean(process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')
+  const xaiReady = Boolean(process.env.XAI_API_KEY)
   const source = type => databaseModels.filter(item => item.type === type)
   const images = (source('image').length ? source('image') : parseModelList('IMAGE_MODELS_JSON', [
     { id: 'qwen-image-2.0', name: '千问图像 2.0', provider: 'aliyun', description: '国内默认 · 高性价比文生图与编辑', creditCost: 2, supportsGenerate: true, supportsEdit: true, enabled: true },
     { id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '海外高质量备用图片模型', creditCost: 5, supportsGenerate: true, supportsEdit: true, enabled: true }
-  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : item.provider === 'volcengine' ? arkReady : item.provider === 'tencent' ? tencentImageReady : false) && !modelIsCoolingDown('image', item) }))
+  ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : item.provider === 'volcengine' ? arkReady : item.provider === 'tencent' ? tencentImageReady : item.provider === 'xai' ? xaiReady : false) && !modelIsCoolingDown('image', item) }))
   const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
     { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
     { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
   ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
-  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'volcengine' ? arkReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : false) }))
+  const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'volcengine' ? arkReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : item.provider === 'xai' ? xaiReady : false) }))
   return { image: images, text: texts, video: videos }
 }
 
@@ -781,10 +783,112 @@ async function generateTencentVideo(options) {
   return options.selected?.id?.startsWith('kling-') ? generateTencentKlingVideo(options) : generateTencentPixVerseVideo(options)
 }
 
+function xaiBaseUrl() {
+  return (process.env.XAI_BASE_URL || 'https://api.x.ai/v1').trim().replace(/\/$/, '')
+}
+
+async function xaiRequest(pathname, options = {}) {
+  if (!process.env.XAI_API_KEY) {
+    const error = new Error('服务端尚未配置 XAI_API_KEY')
+    error.status = 503
+    throw error
+  }
+  const response = await fetch(`${xaiBaseUrl()}${pathname}`, {
+    ...options,
+    headers: { Authorization: `Bearer ${process.env.XAI_API_KEY}`, ...(options.headers || {}) },
+    signal: AbortSignal.timeout(180000)
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const message = payload.error?.message || payload.message || payload.detail || `xAI Grok 请求失败（${response.status}）`
+    const error = new Error(String(message).slice(0, 800))
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
+const xaiImageAspectRatios = { '1:1': '1:1', '4:3': '3:2', '16:9': '16:9', '3:4': '2:3', '9:16': '9:16' }
+
+function xaiImageResults(payload) {
+  const data = Array.isArray(payload.data) ? payload.data : []
+  return data.map(item => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : '')).filter(Boolean)
+}
+
+async function generateXaiImage({ model, prompt, ratio, count, files = [] }) {
+  const imageCount = Math.min(4, Math.max(1, Number(count) || 1))
+  const endpoint = files.length ? '/images/edits' : '/images/generations'
+  if (files.length > 1) {
+    const error = new Error('Grok 图片编辑目前只支持一张参考图，请减少图片数量或改用支持多图合成的模型')
+    error.status = 400
+    throw error
+  }
+  if (files.some(file => !['image/png', 'image/jpeg', 'image/webp'].includes(file.mimetype))) {
+    const error = new Error('Grok 参考图仅支持 PNG、JPG 或 WebP 格式')
+    error.status = 400
+    throw error
+  }
+  const body = {
+    model: model.id,
+    prompt: prompt.trim(),
+    n: imageCount,
+    aspect_ratio: xaiImageAspectRatios[ratio] || '1:1',
+    response_format: 'url'
+  }
+  if (files[0]) body.image = { url: `data:${files[0].mimetype};base64,${files[0].buffer.toString('base64')}`, type: 'image_url' }
+  const payload = await xaiRequest(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  const results = xaiImageResults(payload)
+  if (!results.length) throw new Error('xAI Grok 图片接口已响应，但没有返回图片文件')
+  return results
+}
+
+async function generateXaiVideo({ file, mode, prompt, ratio, selected }) {
+  const model = selected?.id || 'grok-imagine-video-1.5'
+  const body = {
+    model,
+    prompt: prompt.trim(),
+    duration: 5,
+    aspect_ratio: ['16:9', '9:16', '1:1'].includes(ratio) ? ratio : '16:9',
+    resolution: '480p'
+  }
+  if (mode === 'image') {
+    if (!file?.buffer || !file.mimetype?.startsWith('image/')) throw new Error('Grok 图生视频缺少有效图片')
+    body.image = { url: `data:${file.mimetype};base64,${file.buffer.toString('base64')}` }
+  }
+  const submitted = await xaiRequest('/videos/generations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+  if (!submitted.request_id) throw new Error('xAI Grok 未返回视频任务 ID')
+
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
+    await wait(5000)
+    const task = await xaiRequest(`/videos/${encodeURIComponent(submitted.request_id)}`)
+    if (task.status === 'done') {
+      if (!task.video?.url) throw new Error('xAI Grok 任务完成但未返回视频地址')
+      return task.video.url
+    }
+    if (task.status === 'failed' || task.status === 'expired') {
+      const message = task.error?.message || task.message || `Grok 视频生成${task.status === 'expired' ? '已过期' : '失败'}`
+      throw new Error(`${message}（任务 ${submitted.request_id}）`)
+    }
+  }
+  const error = new Error(`Grok 视频生成超过10分钟仍未完成；任务ID：${submitted.request_id}`)
+  error.status = 504
+  throw error
+}
+
 async function generateVideo(options) {
   if (options.selected?.provider === 'aliyun') return generateAliyunVideo(options)
   if (options.selected?.provider === 'volcengine') return generateVolcengineVideo(options)
   if (options.selected?.provider === 'tencent') return generateTencentVideo(options)
+  if (options.selected?.provider === 'xai') return generateXaiVideo(options)
   return generateFalVideo(options)
 }
 
@@ -1036,9 +1140,10 @@ app.get('/api/health', (_req, res) => res.json({
   ok: true,
   configured: Boolean(process.env.OPENAI_API_KEY),
   tencentConfigured: Boolean(process.env.TENCENT_API_KEY),
+  xaiConfigured: Boolean(process.env.XAI_API_KEY),
   arkConfigured: Boolean(process.env.ARK_API_KEY),
   textConfigured: Boolean(process.env.DASHSCOPE_API_KEY || process.env.OPENAI_TEXT_API_KEY),
-  videoConfigured: Boolean(process.env.ARK_API_KEY || (process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')),
+  videoConfigured: Boolean(process.env.ARK_API_KEY || (process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL) || process.env.TENCENT_API_KEY || process.env.XAI_API_KEY || (process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')),
   mock: mockEnabled,
   model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2',
   videoModel: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'),
@@ -2280,6 +2385,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
         if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
         if (model.provider === 'volcengine') return generateVolcengineImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
         if (model.provider === 'tencent') return generateTencentImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
+        if (model.provider === 'xai') return generateXaiImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count })
         return images(await client().images.generate(options({ ...req.body, selectedModel: model })))
       })
       generated = generatedImage.result; usedModel = generatedImage.model
@@ -2314,6 +2420,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
         if (model.provider === 'aliyun') return generateAliyunImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
         if (model.provider === 'volcengine') return generateVolcengineImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
         if (model.provider === 'tencent') return generateTencentImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
+        if (model.provider === 'xai') return generateXaiImage({ model, prompt: req.body.prompt, ratio: req.body.ratio, count, files: req.files })
         const image = await Promise.all(req.files.map(file => toFile(file.buffer, file.originalname, { type: file.mimetype })))
         return images(await client().images.edit({ ...options({ ...req.body, selectedModel: model }), image }))
       })
