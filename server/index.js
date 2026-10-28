@@ -808,7 +808,7 @@ async function xaiRequest(pathname, options = {}) {
   return payload
 }
 
-const xaiImageAspectRatios = { '1:1': '1:1', '4:3': '3:2', '16:9': '16:9', '3:4': '2:3', '9:16': '9:16' }
+const xaiImageAspectRatios = { '1:1': '1:1', '4:3': '4:3', '16:9': '16:9', '3:4': '3:4', '9:16': '9:16' }
 
 function xaiImageResults(payload) {
   const data = Array.isArray(payload.data) ? payload.data : []
@@ -833,9 +833,11 @@ async function generateXaiImage({ model, prompt, ratio, count, files = [] }) {
     prompt: prompt.trim(),
     n: imageCount,
     aspect_ratio: xaiImageAspectRatios[ratio] || '1:1',
+    resolution: '1k',
+    seed: Math.floor(Math.random() * 2147483647),
     response_format: 'url'
   }
-  if (files[0]) body.image = { url: `data:${files[0].mimetype};base64,${files[0].buffer.toString('base64')}`, type: 'image_url' }
+  if (files[0]) body.images = [{ url: `data:${files[0].mimetype};base64,${files[0].buffer.toString('base64')}` }]
   const payload = await xaiRequest(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -853,7 +855,8 @@ async function generateXaiVideo({ file, mode, prompt, ratio, selected }) {
     prompt: prompt.trim(),
     duration: 5,
     aspect_ratio: ['16:9', '9:16', '1:1'].includes(ratio) ? ratio : '16:9',
-    resolution: '480p'
+    resolution: '480p',
+    seed: Math.floor(Math.random() * 2147483647)
   }
   if (mode === 'image') {
     if (!file?.buffer || !file.mimetype?.startsWith('image/')) throw new Error('Grok 图生视频缺少有效图片')
