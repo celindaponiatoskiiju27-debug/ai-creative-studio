@@ -323,8 +323,33 @@ function parseModelList(envName, fallback) {
 const runtimeModelFailures = new Map()
 const modelFailureKey = (type, item) => `${type}:${item.provider || 'default'}:${item.id}`
 const modelIsCoolingDown = (type, item) => (runtimeModelFailures.get(modelFailureKey(type, item)) || 0) > Date.now()
-const markModelFailure = (type, item) => runtimeModelFailures.set(modelFailureKey(type, item), Date.now() + 5 * 60 * 1000)
+function modelCooldownMs(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0)
+  if (status === 429) return 60 * 1000
+  if (status === 408 || status === 409 || status >= 500) return 2 * 60 * 1000
+  return 5 * 60 * 1000
+}
+const markModelFailure = (type, item, error) => runtimeModelFailures.set(modelFailureKey(type, item), Date.now() + modelCooldownMs(error))
 const clearModelFailure = (type, item) => runtimeModelFailures.delete(modelFailureKey(type, item))
+function nextModelRecoverySeconds(type) {
+  const now = Date.now()
+  let soonest = Infinity
+  for (const [key, until] of runtimeModelFailures) {
+    if (!key.startsWith(`${type}:`) || until <= now) continue
+    soonest = Math.min(soonest, until)
+  }
+  return Number.isFinite(soonest) ? Math.max(1, Math.ceil((soonest - now) / 1000)) : 0
+}
+function imageModelUnavailableError(capability) {
+  const retryAfter = nextModelRecoverySeconds('image')
+  const label = capability === 'edit' ? '图片编辑' : '图片生成'
+  const error = retryAfter
+    ? new Error(`${label}模型正在限流，请 ${retryAfter} 秒后重试`)
+    : new Error(`当前没有可用的${label}模型`)
+  error.status = retryAfter ? 429 : 503
+  error.retryAfter = retryAfter
+  return error
+}
 let databaseModels = []
 let databaseModelsLoadedAt = 0
 
@@ -403,7 +428,7 @@ async function withModelFallback(type, requestedId, runner, shouldFallback = () 
     } catch (error) {
       lastError = error
       if (!shouldFallback(error, model)) throw error
-      markModelFailure(type, model)
+      markModelFailure(type, model, error)
       console.error('[model-fallback]', type, model.provider, model.id, error.message)
     }
   }
@@ -574,11 +599,7 @@ async function withImageFallback(requestedId, capability, runner) {
   const supports = item => capability === 'edit' ? item.supportsEdit : item.supportsGenerate !== false
   const available = (modelCatalog().image || []).filter(item => item.available && supports(item))
   const candidates = [...available.filter(item => item.id === requestedId), ...available.filter(item => item.id !== requestedId)]
-  if (!candidates.length) {
-    const error = new Error(`当前没有可用的${capability === 'edit' ? '图片编辑' : '图片生成'}模型`)
-    error.status = 503
-    throw error
-  }
+  if (!candidates.length) throw imageModelUnavailableError(capability)
   let lastError
   for (const model of candidates) {
     try {
@@ -588,7 +609,7 @@ async function withImageFallback(requestedId, capability, runner) {
     } catch (error) {
       lastError = error
       if (!retryableProviderError(error) && Number(error?.status || error?.statusCode || 0) !== 403) throw error
-      markModelFailure('image', model)
+      markModelFailure('image', model, error)
       console.error('[image-model-fallback]', capability, model.provider, model.id, error.message)
     }
   }
@@ -1099,6 +1120,9 @@ async function finishGeneration(usageId, success) {
 
 async function rollbackGeneration(usageId, error) {
   if (!usageId) return
+  const reason = String(error?.message || '生成失败').slice(0, 500)
+  const { error: saveError } = await supabaseAdmin().from('usage_records').update({ output_text: `[失败] ${reason}` }).eq('id', usageId)
+  if (saveError) console.error('[generation-error]', usageId, saveError.message)
   try {
     await finishGeneration(usageId, false)
     error.creditsRefunded = true
@@ -2378,7 +2402,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
     const generationModels = (modelCatalog().image || []).filter(item => item.available && item.supportsGenerate !== false)
     let usedModel = generationModels.find(item => item.id === req.body.modelId) || generationModels[0]
-    if (!usedModel) { const error = new Error('当前没有可用的图片生成模型'); error.status = 503; throw error }
+    if (!usedModel) throw imageModelUnavailableError('generate')
     const chargedCredits = Math.max(0, Number(usedModel.creditCost ?? CREDIT_PRICES.image)) * count
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_generation' }, chargedCredits, count)
     let generated
@@ -2413,7 +2437,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
     const count = Math.min(4, Math.max(1, Number(req.body.count) || 1))
     const editModels = (modelCatalog().image || []).filter(item => item.available && item.supportsEdit)
     let usedModel = editModels.find(item => item.id === req.body.modelId) || editModels[0]
-    if (!usedModel) { const error = new Error('当前没有可用的图片编辑模型'); error.status = 503; throw error }
+    if (!usedModel) throw imageModelUnavailableError('edit')
     const chargedCredits = Math.max(0, Number(usedModel.creditCost ?? CREDIT_PRICES.imageEdit)) * count
     usageId = await reserveGeneration(req.user.id, { ...req.body, action: 'image_edit' }, chargedCredits, count)
     let generated
@@ -2523,11 +2547,14 @@ app.use((error, req, res, _next) => {
   if (error.creditsRefunded) clientMessage += '；本次扣除的算力已自动退还，可以修改内容后重试'
   else if (error.refundPending) clientMessage += '；算力退款正在处理中，请稍后查看余额'
   if (status >= 500) clientMessage += `（问题编号：${req.requestId}）`
+  const retryAfter = status === 429 ? (Number(error.retryAfter) || 60) : 0
+  if (retryAfter) res.set('Retry-After', String(retryAfter))
   console.error('[api]', req.requestId, status, message)
   res.status(status).json({
     error: clientMessage,
     requestId: req.requestId,
     retryable: status === 429 || status >= 500,
+    retryAfter: retryAfter || undefined,
     creditsRefunded: Boolean(error.creditsRefunded),
     refundPending: Boolean(error.refundPending)
   })
