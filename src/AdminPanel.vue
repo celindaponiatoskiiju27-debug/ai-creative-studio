@@ -52,6 +52,46 @@
         </article><p v-if="!modelConfigs.length" class="admin-empty">暂无模型，请点击“新增模型”</p>
       </div>
     </section>
+    <section v-show="adminActiveSection === 'toolbox'" class="model-admin-card">
+      <div class="admin-section-title"><div><h3>图小玉工具管理</h3><p>统一管理图小玉工具的上下架，并查看最近生成任务；数据来自图小玉后端</p></div><div class="section-actions"><button @click="loadToolbox">刷新</button></div></div>
+      <p v-if="toolboxError" class="api-error">{{ toolboxError }}</p>
+      <div v-if="toolboxLoading" class="admin-empty">正在读取图小玉数据…</div>
+      <div v-else class="admin-table-wrap">
+        <table class="admin-table"><thead><tr><th>工具</th><th>分组</th><th>状态</th><th>操作</th></tr></thead><tbody>
+          <tr v-for="item in toolboxTools" :key="item.id">
+            <td><b>{{ item.name }}</b><small>{{ item.slug }}</small></td>
+            <td>{{ item.group }}</td>
+            <td>{{ item.enabled ? '已上架' : '已下架' }}</td>
+            <td><button :class="{ secondary: item.enabled }" @click="toggleToolboxTool(item)">{{ item.enabled ? '下架' : '上架' }}</button></td>
+          </tr>
+          <tr v-if="!toolboxTools.length"><td colspan="4" class="admin-empty">暂无工具</td></tr>
+        </tbody></table>
+      </div>
+      <div class="admin-section-title" style="margin-top: 18px"><div><h3>最近任务</h3><p>图小玉后端最近 30 条生成任务</p></div></div>
+      <div class="admin-table-wrap">
+        <table class="admin-table"><thead><tr><th>工具</th><th>状态</th><th>创建时间</th><th>错误</th></tr></thead><tbody>
+          <tr v-for="task in toolboxTasks" :key="task.id">
+            <td>{{ task.tool ? task.tool.name : '—' }}</td>
+            <td>{{ task.status }}</td>
+            <td>{{ formatDate(task.createdAt) }}</td>
+            <td>{{ task.errorCode || '—' }}</td>
+          </tr>
+          <tr v-if="!toolboxTasks.length"><td colspan="4" class="admin-empty">暂无任务</td></tr>
+        </tbody></table>
+      </div>
+      <div class="admin-section-title" style="margin-top: 18px"><div><h3>案例精选</h3><p>勾选后作品会在图小玉 /cases 页面展示</p></div></div>
+      <div class="admin-table-wrap">
+        <table class="admin-table"><thead><tr><th>作品</th><th>类型</th><th>精选</th><th>操作</th></tr></thead><tbody>
+          <tr v-for="work in toolboxWorks" :key="work.id">
+            <td><b>{{ work.title }}</b><small>{{ formatDate(work.createdAt) }}</small></td>
+            <td>{{ work.type }}</td>
+            <td>{{ work.featured ? '精选' : '普通' }}</td>
+            <td><button :class="{ secondary: work.featured }" @click="toggleToolboxFeatured(work)">{{ work.featured ? '取消精选' : '设为精选' }}</button></td>
+          </tr>
+          <tr v-if="!toolboxWorks.length"><td colspan="4" class="admin-empty">暂无作品</td></tr>
+        </tbody></table>
+      </div>
+    </section>
     <section v-show="adminActiveSection === 'overview'" class="business-dashboard">
       <div class="admin-section-title"><div><h3>经营数据分析</h3><p>到账收入减已批准退款为净收入；预估毛利尚未包含服务器、支付手续费、税费和人工成本</p></div><div class="analytics-period"><button v-for="days in [7,30,90]" :key="days" :class="{ active: analyticsDays === days }" @click="changeAnalyticsDays(days)">{{ days }}天</button><button @click="loadAnalytics">刷新</button></div></div>
       <div v-if="analyticsLoading" class="analytics-loading">正在统计经营数据…</div>
@@ -195,9 +235,9 @@
 export default {
   name: 'AdminPanel',
   props: { session: { type: Object, required: true } },
-  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, analyticsDays: 30, analyticsLoading: false, analytics: { metrics: {}, byAction: [], trend: [], freshness: null }, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'ai_chat', name: 'AI 顾问对话' }, { id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', lifecycleSettings: { generated_asset_days: 90, closed_support_days: 365, last_cleanup_at: null }, lifecyclePreview: { assetRecords: 0, assetFiles: 0, closedSupport: 0 }, lifecycleSaving: false, lifecycleCleaning: false, lifecycleExporting: false, safetySettings: { active: true, custom_blocked_terms: [] }, safetyTermsText: '', safetySaving: false, moderationEvents: [], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
+  data: () => ({ users: [], orders: [], refunds: [], packages: [], referrals: [], referralSettings: {}, referralStats: {}, referralSaving: false, analyticsDays: 30, analyticsLoading: false, analytics: { metrics: {}, byAction: [], trend: [], freshness: null }, costSettings: { active: true, daily_limit_fen: 0, monthly_limit_fen: 0, action_costs: {}, disabled_actions: [] }, costStats: { dayUsedFen: 0, monthUsedFen: 0, byAction: {} }, costDailyYuan: 0, costMonthlyYuan: 0, costUserDailyYuan: 0, costActionYuan: {}, costSaving: false, costActions: [{ id: 'ai_chat', name: 'AI 顾问对话' }, { id: 'copy_generation', name: '电商文案' }, { id: 'prompt_enhance', name: 'AI 润色' }, { id: 'image_generation', name: '图片生成' }, { id: 'image_edit', name: '图生图' }, { id: 'gif_generation', name: 'GIF 动图' }, { id: 'video_generation', name: '视频生成' }], systemHealth: { status: 'healthy', checkedAt: null, uptimeSeconds: 0, configured: {}, metrics: {}, alerts: [] }, healthCleaning: false, healthPollingTimer: null, lastHealthAlert: '', lifecycleSettings: { generated_asset_days: 90, closed_support_days: 365, last_cleanup_at: null }, lifecyclePreview: { assetRecords: 0, assetFiles: 0, closedSupport: 0 }, lifecycleSaving: false, lifecycleCleaning: false, lifecycleExporting: false, safetySettings: { active: true, custom_blocked_terms: [] }, safetyTermsText: '', safetySaving: false, moderationEvents: [], supportConversations: [], selectedSupportId: '', supportMessages: [], supportReply: '', supportSending: false, packageSavingId: '', paymentSettings: {}, paymentInstructions: '', qrFile: null, paymentSaving: false, search: '', adjustments: {}, toolboxTools: [], toolboxTasks: [], toolboxLoading: false, toolboxError: '', loading: false, busyId: '', errorMessage: '', orderAlert: '', knownPendingOrderIds: [], orderPollingTimer: null, notificationPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission, originalTitle: document.title }),
   computed: {
-    adminNavItems() { return [{ id: 'overview', icon: '⌂', name: '数据概览' }, { id: 'announcement', icon: '◉', name: '公告管理' }, { id: 'models', icon: '◇', name: '模型管理' }, { id: 'community', icon: '◎', name: '广场审核' }, { id: 'users', icon: '♙', name: '用户管理' }, { id: 'billing', icon: '¥', name: '充值与套餐' }, { id: 'growth', icon: '↗', name: '邀请增长' }, { id: 'support', icon: '☏', name: '人工客服' }, { id: 'cost', icon: '◫', name: '成本控制' }, { id: 'risk', icon: '!', name: '内容风控' }, { id: 'system', icon: '⚙', name: '系统与审计' }] },
+    adminNavItems() { return [{ id: 'overview', icon: '⌂', name: '数据概览' }, { id: 'announcement', icon: '◉', name: '公告管理' }, { id: 'models', icon: '◇', name: '模型管理' }, { id: 'toolbox', icon: '▤', name: '图小玉工具' }, { id: 'community', icon: '◎', name: '广场审核' }, { id: 'users', icon: '♙', name: '用户管理' }, { id: 'billing', icon: '¥', name: '充值与套餐' }, { id: 'growth', icon: '↗', name: '邀请增长' }, { id: 'support', icon: '☏', name: '人工客服' }, { id: 'cost', icon: '◫', name: '成本控制' }, { id: 'risk', icon: '!', name: '内容风控' }, { id: 'system', icon: '⚙', name: '系统与审计' }] },
     adminActiveSection() { return this.adjustments._adminTab || 'overview' },
     announcementData() { return this.adjustments._announcement || null },
     announcementSaving() { return Boolean(this.adjustments._announcementSaving) },
@@ -217,7 +257,37 @@ export default {
   mounted() { this.loadModels(); this.loadUsers(); this.loadOrders(false); this.loadRefunds(); this.loadPackages(); this.loadPaymentSettings(); this.loadSupportConversations(); this.loadReferrals(); this.loadAuditLogs(); this.loadGenerationFeedback(); this.loadAnnouncement(); this.loadAnalytics(); this.loadCostControl(); this.loadLifecycle(); this.loadContentSafety(); this.loadSystemHealth(false); this.orderPollingTimer = setInterval(() => this.loadOrders(true), 15000); this.healthPollingTimer = setInterval(() => this.loadSystemHealth(true), 30000) },
   beforeDestroy() { if (this.orderPollingTimer) clearInterval(this.orderPollingTimer); if (this.healthPollingTimer) clearInterval(this.healthPollingTimer); document.title = this.originalTitle },
   methods: {
-    switchAdminSection(section) { this.$set(this.adjustments, '_adminTab', section); if (section === 'community') this.loadCommunityAdmin(); if (section === 'models') this.loadModels(); window.scrollTo({ top: 0, behavior: 'smooth' }) },
+    switchAdminSection(section) { this.$set(this.adjustments, '_adminTab', section); if (section === 'community') this.loadCommunityAdmin(); if (section === 'models') this.loadModels(); if (section === 'toolbox') this.loadToolbox(); window.scrollTo({ top: 0, behavior: 'smooth' }) },
+    async loadToolbox() {
+      this.toolboxLoading = true; this.toolboxError = ''
+      try {
+        const [toolsRes, tasksRes, worksRes] = await Promise.all([
+          fetch('/api/admin/toolbox/tools', { headers: this.headers() }),
+          fetch('/api/admin/toolbox/tasks?limit=30', { headers: this.headers() }),
+          fetch('/api/admin/toolbox/works?limit=20', { headers: this.headers() })
+        ])
+        const toolsData = await toolsRes.json(); if (!toolsRes.ok) throw new Error(toolsData.error || '读取图小玉工具失败')
+        const tasksData = await tasksRes.json(); if (!tasksRes.ok) throw new Error(tasksData.error || '读取图小玉任务失败')
+        const worksData = await worksRes.json(); if (!worksRes.ok) throw new Error(worksData.error || '读取图小玉作品失败')
+        this.toolboxTools = toolsData.data || []; this.toolboxTasks = tasksData.data || []; this.toolboxWorks = worksData.data || []
+      } catch (error) { this.toolboxError = error.message } finally { this.toolboxLoading = false }
+    },
+    async toggleToolboxFeatured(work) {
+      this.toolboxError = ''
+      try {
+        const response = await fetch(`/api/admin/toolbox/works/${encodeURIComponent(work.id)}/featured`, { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ featured: !work.featured }) })
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || '更新案例精选失败')
+        work.featured = !work.featured
+      } catch (error) { this.toolboxError = error.message }
+    },
+    async toggleToolboxTool(tool) {
+      this.toolboxError = ''
+      try {
+        const response = await fetch(`/api/admin/toolbox/tools/${encodeURIComponent(tool.id)}`, { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ enabled: !tool.enabled }) })
+        const data = await response.json(); if (!response.ok) throw new Error(data.error || '更新图小玉工具失败')
+        tool.enabled = !tool.enabled
+      } catch (error) { this.toolboxError = error.message }
+    },
     async loadModels() { try { const response = await fetch('/api/admin/models', { headers: this.headers() }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '读取模型失败'); const availability = new Map(Object.values(data.catalog || {}).flat().map(item => [`${item.type}:${item.provider}:${item.id}`, item.available])); this.$set(this.adjustments, '_modelConfigs', (data.models || []).map(item => ({ ...item, available: availability.get(`${item.type}:${item.provider}:${item.id}`) === true }))) } catch (error) { this.errorMessage = error.message } },
     async addModel() { const draft = { type: 'image', provider: 'openai', id: `new-model-${Date.now()}`, name: '新模型', description: '', textModel: '', enabled: false, sortOrder: 100 }; try { const response = await fetch('/api/admin/models', { method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(draft) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '新增模型失败'); await this.loadModels() } catch (error) { this.errorMessage = error.message } },
     async saveModel(item) { this.$set(this.adjustments, '_modelSavingId', item.databaseId); try { const response = await fetch(`/api/admin/models/${item.databaseId}`, { method: 'PATCH', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(item) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || '保存模型失败'); await this.loadModels() } catch (error) { this.errorMessage = error.message } finally { this.$set(this.adjustments, '_modelSavingId', '') } },

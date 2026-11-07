@@ -186,6 +186,34 @@ const SERVICE_USER_ID = String(process.env.SERVICE_USER_ID || '')
 const SERVICE_USER_EMAIL = String(process.env.SERVICE_USER_EMAIL || '').trim()
 let cachedServiceUserId = SERVICE_USER_ID
 
+// 图小玉工具后台：灵境后台通过服务密钥代理到图小玉后端（Render 需配置两个环境变量）
+const TOOLBOX_BASE_URL = String(process.env.TOOLBOX_BASE_URL || '').replace(/\/$/, '')
+const TOOLBOX_ADMIN_KEY = String(process.env.TOOLBOX_ADMIN_KEY || '')
+
+async function toolboxAdminFetch(req, method, target, body) {
+  if (!TOOLBOX_BASE_URL || !TOOLBOX_ADMIN_KEY) {
+    const error = new Error('未配置图小玉管理地址，请设置 TOOLBOX_BASE_URL 与 TOOLBOX_ADMIN_KEY')
+    error.status = 503
+    throw error
+  }
+  const query = new URLSearchParams(req.query).toString()
+  const response = await fetch(`${TOOLBOX_BASE_URL}${target}${query ? `?${query}` : ''}`, {
+    method,
+    headers: { 'X-Toolbox-Admin-Key': TOOLBOX_ADMIN_KEY, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(25000)
+  })
+  const text = await response.text()
+  let payload
+  try { payload = JSON.parse(text) } catch { payload = { message: text.slice(0, 200) } }
+  if (!response.ok) {
+    const error = new Error(payload?.message || `图小玉接口返回 ${response.status}`)
+    error.status = response.status
+    throw error
+  }
+  return payload?.data ?? payload
+}
+
 function serviceConfigReady() {
   return Boolean(SERVICE_API_KEY && (SERVICE_USER_ID || SERVICE_USER_EMAIL))
 }
@@ -1315,6 +1343,37 @@ app.delete('/api/admin/models/:id', requireUser, requireAdmin, async (req, res, 
   try {
     const { error } = await supabaseAdmin().from('model_configs').delete().eq('id', req.params.id); if (error) throw error
     await refreshModelConfigs(true); await auditAdmin(req, 'delete_model', 'model', req.params.id, {}); res.status(204).end()
+  } catch (error) { next(error) }
+})
+
+// 图小玉工具管理（灵境后台统一入口）：工具上下架、任务监控
+app.get('/api/admin/toolbox/stats', requireUser, requireAdmin, async (req, res, next) => {
+  try { res.json({ data: await toolboxAdminFetch(req, 'GET', '/web/admin/toolbox/stats') }) } catch (error) { next(error) }
+})
+
+app.get('/api/admin/toolbox/tools', requireUser, requireAdmin, async (req, res, next) => {
+  try { res.json({ data: await toolboxAdminFetch(req, 'GET', '/web/admin/toolbox/tools') }) } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/toolbox/tools/:id', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const id = encodeURIComponent(req.params.id)
+    res.json({ data: await toolboxAdminFetch(req, 'PATCH', `/web/admin/toolbox/tools/${id}`, req.body) })
+  } catch (error) { next(error) }
+})
+
+app.get('/api/admin/toolbox/tasks', requireUser, requireAdmin, async (req, res, next) => {
+  try { res.json({ data: await toolboxAdminFetch(req, 'GET', '/web/admin/toolbox/tasks') }) } catch (error) { next(error) }
+})
+
+app.get('/api/admin/toolbox/works', requireUser, requireAdmin, async (req, res, next) => {
+  try { res.json({ data: await toolboxAdminFetch(req, 'GET', '/web/admin/toolbox/works') }) } catch (error) { next(error) }
+})
+
+app.patch('/api/admin/toolbox/works/:id/featured', requireUser, requireAdmin, async (req, res, next) => {
+  try {
+    const id = encodeURIComponent(req.params.id)
+    res.json({ data: await toolboxAdminFetch(req, 'PATCH', `/web/admin/toolbox/works/${id}/featured`, req.body) })
   } catch (error) { next(error) }
 })
 
