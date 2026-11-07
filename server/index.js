@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 const app = express()
 app.disable('x-powered-by')
@@ -81,6 +81,7 @@ function client() {
 }
 
 let supabaseInstance
+let supabaseAnonInstance
 const registrationAttempts = new Map()
 const promptEnhanceAttempts = new Map()
 const productEventAttempts = new Map()
@@ -138,6 +139,22 @@ function supabaseAdmin() {
   return supabaseInstance
 }
 
+/** 匿名客户端仅用于邮箱密码登录/刷新，服务端持 anon key，不下发到浏览器 */
+function supabaseAnon() {
+  const anonKey = String(process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '')
+  if (!process.env.SUPABASE_URL || !anonKey) {
+    const error = new Error('服务端尚未配置 Supabase 匿名密钥')
+    error.status = 503
+    throw error
+  }
+  if (!supabaseAnonInstance) {
+    supabaseAnonInstance = createSupabaseClient(process.env.SUPABASE_URL, anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false }
+    })
+  }
+  return supabaseAnonInstance
+}
+
 async function requireUser(req, _res, next) {
   try {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
@@ -162,6 +179,61 @@ async function requireAdmin(req, _res, next) {
     req.profile = profile
     next()
   } catch (error) { next(error) }
+}
+
+const SERVICE_API_KEY = String(process.env.SERVICE_API_KEY || '')
+const SERVICE_USER_ID = String(process.env.SERVICE_USER_ID || '')
+const SERVICE_USER_EMAIL = String(process.env.SERVICE_USER_EMAIL || '').trim()
+let cachedServiceUserId = SERVICE_USER_ID
+
+function serviceConfigReady() {
+  return Boolean(SERVICE_API_KEY && (SERVICE_USER_ID || SERVICE_USER_EMAIL))
+}
+
+async function resolveServiceUserId() {
+  if (cachedServiceUserId) return cachedServiceUserId
+  const { data, error } = await supabaseAdmin().from('profiles').select('id').eq('email', SERVICE_USER_EMAIL).single()
+  if (error || !data?.id) {
+    const configError = new Error(`未找到灵境服务账号：${SERVICE_USER_EMAIL}`)
+    configError.status = 503
+    throw configError
+  }
+  cachedServiceUserId = data.id
+  return cachedServiceUserId
+}
+
+function validServiceKey(value) {
+  const provided = String(value || '')
+  if (!SERVICE_API_KEY || provided.length !== SERVICE_API_KEY.length) return false
+  return timingSafeEqual(Buffer.from(provided), Buffer.from(SERVICE_API_KEY))
+}
+
+/**
+ * 服务端到服务端鉴权：图小玉等自有应用使用 X-Service-Key 调用，
+ * 统一映射到配置的服务账号（SERVICE_USER_ID 或 SERVICE_USER_EMAIL），不依赖终端用户 token。
+ */
+async function requireService(req, _res, next) {
+  try {
+    if (!serviceConfigReady()) {
+      const error = new Error('服务端尚未配置 SERVICE_API_KEY 与服务账号')
+      error.status = 503
+      throw error
+    }
+    if (!validServiceKey(req.headers['x-service-key'])) {
+      const error = new Error('服务密钥无效')
+      error.status = 401
+      throw error
+    }
+    req.user = { id: await resolveServiceUserId(), email: 'service@lingjing.local' }
+    req.service = true
+    req.externalUserId = String(req.headers['x-external-user-id'] || '').slice(0, 64) || null
+    next()
+  } catch (error) { next(error) }
+}
+
+async function requireUserOrService(req, res, next) {
+  if (req.headers['x-service-key']) return requireService(req, res, next)
+  return requireUser(req, res, next)
 }
 
 async function reserveGeneration(userId, body, requestedCredits, outputCount) {
@@ -1180,6 +1252,20 @@ app.get('/api/health', (_req, res) => res.json({
 
 app.get('/api/models', async (_req, res) => { await refreshModelConfigs(); res.json({ models: modelCatalog(), updatedAt: new Date().toISOString() }) })
 
+app.get('/api/service/health', requireService, async (req, res, next) => {
+  try {
+    const profile = await profileFor(req.user.id)
+    res.json({
+      ok: true,
+      service: true,
+      serviceUser: profile.email,
+      credits: profile.credits,
+      externalUserId: req.externalUserId,
+      requestId: req.requestId
+    })
+  } catch (error) { next(error) }
+})
+
 app.get('/api/admin/models', requireUser, requireAdmin, async (_req, res, next) => {
   try { await refreshModelConfigs(true); res.json({ models: databaseModels, catalog: modelCatalog() }) } catch (error) { next(error) }
 })
@@ -1234,6 +1320,37 @@ app.post('/api/auth/register', async (req, res, next) => {
     const { error: consentError } = await supabaseAdmin().from('user_consents').insert(consentRows)
     if (consentError) console.error('[legal-consent]', consentError.message)
     res.status(201).json({ user: { id: data.user.id, email: data.user.email } })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/login', async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase()
+    const password = String(req.body.password || '')
+    if (!/^\S+@\S+\.\S+$/.test(email) || password.length < 6) return res.status(400).json({ error: '请输入有效邮箱和至少 6 位密码' })
+    const { data, error } = await supabaseAnon().auth.signInWithPassword({ email, password })
+    if (error) return res.status(401).json({ error: '邮箱或密码不正确' })
+    res.json({
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      expiresIn: data.session.expires_in,
+      user: { id: data.user.id, email: data.user.email }
+    })
+  } catch (error) { next(error) }
+})
+
+app.post('/api/auth/refresh', async (req, res, next) => {
+  try {
+    const refreshToken = String(req.body.refreshToken || '').trim()
+    if (!refreshToken) return res.status(400).json({ error: '缺少 refreshToken' })
+    const { data, error } = await supabaseAnon().auth.refreshSession({ refresh_token: refreshToken })
+    if (error || !data.session) return res.status(401).json({ error: '登录已过期，请重新登录' })
+    res.json({
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      expiresIn: data.session.expires_in,
+      user: { id: data.user.id, email: data.user.email }
+    })
   } catch (error) { next(error) }
 })
 
@@ -2307,7 +2424,7 @@ app.post('/api/product-kit/analyze', requireUser, async (req, res, next) => {
   } catch (error) { next(error) }
 })
 
-app.post('/api/copy/generate', requireUser, async (req, res, next) => {
+app.post('/api/copy/generate', requireUserOrService, async (req, res, next) => {
   let usageId
   try {
     await refreshModelConfigs()
@@ -2336,6 +2453,38 @@ app.post('/api/copy/generate', requireUser, async (req, res, next) => {
     await finishGeneration(usageId, true)
     const profile = await profileFor(req.user.id)
     res.json({ copy, usageId, model: textModel.id, modelName: textModel.name || textModel.id, provider: textModel.provider, chargedCredits: selectedCreditCost, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
+  } catch (error) {
+    await rollbackGeneration(usageId, error)
+    next(error)
+  }
+})
+
+app.post('/api/text/generate', requireUserOrService, async (req, res, next) => {
+  let usageId
+  try {
+    await refreshModelConfigs()
+    let textModel = selectedModel('text', req.body.modelId)
+    const prompt = String(req.body.prompt || '').trim()
+    const instructions = String(req.body.instructions || '你是一名资深中文内容创作者，请严格按用户要求输出，不要添加多余解释。').slice(0, 4000)
+    const maxOutputTokens = Math.max(200, Math.min(4000, Number(req.body.maxOutputTokens) || 2000))
+    if (!prompt) return res.status(400).json({ error: '请填写提示词' })
+    if (prompt.length > 8000) return res.status(400).json({ error: '提示词过长' })
+    await enforceContentSafety(req, prompt, 'text_generation')
+    const cost = Math.max(0, Number(textModel.creditCost ?? CREDIT_PRICES.copy))
+    usageId = await reserveGeneration(req.user.id, { prompt, count: 1, action: 'text_generation' }, cost, 1)
+    const textResponse = await withModelFallback('text', req.body.modelId, candidate => generateText(candidate, {
+      instructions,
+      input: prompt,
+      maxOutputTokens
+    }), retryableProviderError)
+    const text = textResponse.result.trim()
+    textModel = textResponse.model
+    if (!text) throw new Error(`${textModel.name || textModel.id} 未返回文本内容`)
+    const { error: saveTextError } = await supabaseAdmin().from('usage_records').update({ output_text: text }).eq('id', usageId)
+    if (saveTextError) console.error('[archive-text]', usageId, saveTextError.message)
+    await finishGeneration(usageId, true)
+    const profile = await profileFor(req.user.id)
+    res.json({ text, usageId, model: textModel.id, modelName: textModel.name || textModel.id, provider: textModel.provider, chargedCredits: cost, credits: profile.credits, aiGenerated: true, aiLabel: AI_LABEL })
   } catch (error) {
     await rollbackGeneration(usageId, error)
     next(error)
@@ -2393,7 +2542,7 @@ app.post('/api/prompt/enhance', requireUser, async (req, res, next) => {
   }
 })
 
-app.post('/api/images/generate', requireUser, async (req, res, next) => {
+app.post('/api/images/generate', requireUserOrService, async (req, res, next) => {
   let usageId
   try {
     await refreshModelConfigs()
@@ -2427,7 +2576,7 @@ app.post('/api/images/generate', requireUser, async (req, res, next) => {
   }
 })
 
-app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req, res, next) => {
+app.post('/api/images/edit', requireUserOrService, upload.array('images', 4), async (req, res, next) => {
   let usageId
   try {
     await refreshModelConfigs()
@@ -2463,7 +2612,7 @@ app.post('/api/images/edit', requireUser, upload.array('images', 4), async (req,
   }
 })
 
-app.post('/api/videos/generate', requireUser, upload.single('image'), async (req, res, next) => {
+app.post('/api/videos/generate', requireUserOrService, upload.single('image'), async (req, res, next) => {
   let usageId
   let inputPath
   let jobId
@@ -2508,7 +2657,7 @@ app.post('/api/videos/generate', requireUser, upload.single('image'), async (req
   }
 })
 
-app.get('/api/video-jobs/active', requireUser, async (req, res, next) => {
+app.get('/api/video-jobs/active', requireUserOrService, async (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
     await expireStaleVideoJobs(req.user.id)
@@ -2518,7 +2667,7 @@ app.get('/api/video-jobs/active', requireUser, async (req, res, next) => {
   } catch (error) { next(error) }
 })
 
-app.get('/api/video-jobs/:id', requireUser, async (req, res, next) => {
+app.get('/api/video-jobs/:id', requireUserOrService, async (req, res, next) => {
   try {
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
     await expireStaleVideoJobs(req.user.id)
