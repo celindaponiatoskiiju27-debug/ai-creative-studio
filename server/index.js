@@ -304,6 +304,16 @@ function openAITextClient() {
   })
 }
 
+function deepseekTextClient() {
+  if (!process.env.DEEPSEEK_API_KEY) {
+    const error = new Error('服务端尚未配置 DEEPSEEK_API_KEY')
+    error.status = 503
+    throw error
+  }
+  const baseURL = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').trim()
+  return new OpenAI({ apiKey: process.env.DEEPSEEK_API_KEY, baseURL: baseURL.replace(/\/$/, '') })
+}
+
 function qwenTextClient() {
   if (!process.env.DASHSCOPE_API_KEY) {
     const error = new Error('服务端尚未配置 DASHSCOPE_API_KEY')
@@ -323,6 +333,15 @@ function retryableProviderError(error) {
 }
 
 async function generateText(candidate, { instructions, input, maxOutputTokens }) {
+  if (candidate.provider === 'deepseek') {
+    const response = await deepseekTextClient().chat.completions.create({
+      model: candidate.id,
+      messages: [{ role: 'system', content: instructions }, { role: 'user', content: input }],
+      max_tokens: maxOutputTokens,
+      temperature: 0.7
+    })
+    return responseText(response)
+  }
   if (candidate.provider === 'aliyun') {
     const response = await qwenTextClient().chat.completions.create({
       model: candidate.id,
@@ -446,7 +465,7 @@ function validateModelConfig(body) {
   if (!['openai', 'aliyun', 'volcengine', 'fal', 'tencent', 'xai'].includes(provider)) { const error = new Error('请选择已支持的供应商'); error.status = 400; throw error }
   if (!modelId || !name) { const error = new Error('模型名称和模型 ID 不能为空'); error.status = 400; throw error }
   if (type === 'image' && !['openai', 'aliyun', 'volcengine', 'tencent', 'xai'].includes(provider)) { const error = new Error('图片模型供应商配置不正确'); error.status = 400; throw error }
-  if (type === 'text' && !['openai', 'aliyun'].includes(provider)) { const error = new Error('文案模型仅支持 OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
+  if (type === 'text' && !['openai', 'aliyun', 'deepseek'].includes(provider)) { const error = new Error('文案模型仅支持 DeepSeek、OpenAI 兼容接口或阿里云百炼'); error.status = 400; throw error }
   if (provider === 'xai' && !['image', 'video'].includes(type)) { const error = new Error('xAI Grok 当前仅支持图片和视频生成'); error.status = 400; throw error }
   return { type, provider, model_id: modelId.slice(0, 200), name: name.slice(0, 80), description: String(body.description || '').trim().slice(0, 300), text_model_id: String(body.text_model_id || body.textModel || '').trim().slice(0, 200), enabled: body.enabled !== false, sort_order: Math.max(0, Math.min(10000, Number(body.sort_order ?? body.sortOrder) || 100)), credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.credit_cost ?? body.creditCost ?? 1) || 0))), text_credit_cost: Math.max(0, Math.min(10000, Math.round(Number(body.text_credit_cost ?? body.textCreditCost ?? body.credit_cost ?? body.creditCost ?? 1) || 0))), supports_generate: body.supports_generate ?? body.supportsGenerate ?? true, supports_edit: body.supports_edit ?? body.supportsEdit ?? false }
 }
@@ -458,6 +477,7 @@ function modelCatalog() {
   const arkReady = Boolean(process.env.ARK_API_KEY)
   const openAITextReady = Boolean(process.env.OPENAI_TEXT_API_KEY)
   const qwenTextReady = Boolean(process.env.DASHSCOPE_API_KEY)
+  const deepseekTextReady = Boolean(process.env.DEEPSEEK_API_KEY)
   const aliyunReady = Boolean(process.env.DASHSCOPE_API_KEY && process.env.DASHSCOPE_BASE_URL)
   const falReady = Boolean(process.env.FAL_KEY && process.env.FAL_ENABLED === 'true')
   const xaiReady = Boolean(process.env.XAI_API_KEY)
@@ -467,9 +487,10 @@ function modelCatalog() {
     { id: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', description: '海外高质量备用图片模型', creditCost: 5, supportsGenerate: true, supportsEdit: true, enabled: true }
   ])).map(item => ({ ...item, type: 'image', available: item.enabled !== false && (item.provider === 'aliyun' ? aliyunImageReady : item.provider === 'openai' ? openAIImageReady : item.provider === 'volcengine' ? arkReady : item.provider === 'tencent' ? tencentImageReady : item.provider === 'xai' ? xaiReady : false) && !modelIsCoolingDown('image', item) }))
   const texts = (source('text').length ? source('text') : parseModelList('TEXT_MODELS_JSON', [
-    { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '默认：高性价比电商文案与提示词润色', creditCost: 1, enabled: true },
-    { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：百炼服务故障时自动兜底', creditCost: 2, enabled: true }
-  ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
+    { id: process.env.DEEPSEEK_TEXT_MODEL || 'deepseek-chat', name: 'DeepSeek Chat', provider: 'deepseek', description: '默认文案模型 · DeepSeek 官方接口', creditCost: 1, enabled: true },
+    { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '备用：百炼文案模型', creditCost: 1, enabled: true },
+    { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：OpenAI 兼容文本模型', creditCost: 2, enabled: true }
+  ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : item.provider === 'deepseek' ? deepseekTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
   const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'volcengine' ? arkReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : item.provider === 'xai' ? xaiReady : false) }))
   return { image: images, text: texts, video: videos }
 }
