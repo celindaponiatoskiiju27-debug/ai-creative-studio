@@ -190,28 +190,39 @@ let cachedServiceUserId = SERVICE_USER_ID
 const TOOLBOX_BASE_URL = String(process.env.TOOLBOX_BASE_URL || '').replace(/\/$/, '')
 const TOOLBOX_ADMIN_KEY = String(process.env.TOOLBOX_ADMIN_KEY || '')
 
-async function toolboxAdminFetch(req, method, target, body) {
+async function toolboxAdminFetch(req, method, target, body, retried = false) {
   if (!TOOLBOX_BASE_URL || !TOOLBOX_ADMIN_KEY) {
     const error = new Error('未配置图小玉管理地址，请设置 TOOLBOX_BASE_URL 与 TOOLBOX_ADMIN_KEY')
     error.status = 503
     throw error
   }
-  const query = new URLSearchParams(req.query).toString()
-  const response = await fetch(`${TOOLBOX_BASE_URL}${target}${query ? `?${query}` : ''}`, {
-    method,
-    headers: { 'X-Toolbox-Admin-Key': TOOLBOX_ADMIN_KEY, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(25000)
-  })
-  const text = await response.text()
-  let payload
-  try { payload = JSON.parse(text) } catch { payload = { message: text.slice(0, 200) } }
-  if (!response.ok) {
-    const error = new Error(payload?.message || `图小玉接口返回 ${response.status}`)
-    error.status = response.status
+  try {
+    const query = new URLSearchParams(req.query).toString()
+    const response = await fetch(`${TOOLBOX_BASE_URL}${target}${query ? `?${query}` : ''}`, {
+      method,
+      headers: { 'X-Toolbox-Admin-Key': TOOLBOX_ADMIN_KEY, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+      // 图小玉后端在 Render 免费实例可能休眠，冷启动需要 30-60 秒
+      signal: AbortSignal.timeout(60000)
+    })
+    const text = await response.text()
+    let payload
+    try { payload = JSON.parse(text) } catch { payload = { message: text.slice(0, 200) } }
+    if (!response.ok) {
+      const error = new Error(payload?.message || `图小玉接口返回 ${response.status}`)
+      error.status = response.status
+      throw error
+    }
+    return payload?.data ?? payload
+  } catch (error) {
+    const status = Number(error.status || 0)
+    // 网络错误/超时/5xx 重试一次；4xx 直接返回
+    if (!retried && (status === 0 || status >= 500)) {
+      await new Promise((resolve) => setTimeout(resolve, 3000))
+      return toolboxAdminFetch(req, method, target, body, true)
+    }
     throw error
   }
-  return payload?.data ?? payload
 }
 
 function serviceConfigReady() {
