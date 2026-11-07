@@ -491,6 +491,10 @@ function modelCatalog() {
     { id: 'qwen-plus', name: '通义千问 Plus', provider: 'aliyun', description: '备用：百炼文案模型', creditCost: 1, enabled: true },
     { id: process.env.OPENAI_TEXT_MODEL || 'gpt-5.4', name: 'GPT-5.4', provider: 'openai', description: '备用：OpenAI 兼容文本模型', creditCost: 2, enabled: true }
   ])).map(item => ({ ...item, type: 'text', available: item.enabled !== false && (item.provider === 'aliyun' ? qwenTextReady : item.provider === 'deepseek' ? deepseekTextReady : openAITextReady) && !modelIsCoolingDown('text', item) }))
+  if (deepseekTextReady && !texts.some(item => item.provider === 'deepseek')) {
+    const deepseekModel = { id: process.env.DEEPSEEK_TEXT_MODEL || 'deepseek-chat', name: 'DeepSeek Chat', provider: 'deepseek', description: '默认文案模型 · DeepSeek 官方接口', creditCost: 1, enabled: true, type: 'text' }
+    texts.unshift({ ...deepseekModel, available: !modelIsCoolingDown('text', deepseekModel) })
+  }
   const videos = (source('video').length ? source('video') : parseModelList('VIDEO_MODELS_JSON', [{ id: process.env.VIDEO_MODEL || (videoProvider() === 'aliyun' ? 'wan2.6-i2v-flash' : 'fal-ai/ltx-video/image-to-video'), textModel: process.env.VIDEO_TEXT_MODEL || '', name: videoProvider() === 'aliyun' ? '通义万相' : 'LTX Video', provider: videoProvider(), description: '图生动态与视频生成', creditCost: 6, supportsGenerate: true, supportsEdit: true, enabled: true }])).map(item => ({ ...item, type: 'video', available: item.enabled !== false && !modelIsCoolingDown('video', item) && (item.provider === 'aliyun' ? aliyunReady : item.provider === 'volcengine' ? arkReady : item.provider === 'fal' ? falReady : item.provider === 'tencent' ? tencentImageReady : item.provider === 'xai' ? xaiReady : false) }))
   return { image: images, text: texts, video: videos }
 }
